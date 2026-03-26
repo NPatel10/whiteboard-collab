@@ -5,7 +5,7 @@
 - [ ] Finalize canvas library choice for SvelteKit.
 - [ ] Add `shadcn-svelte` to the frontend stack and configure required UI primitives.
 - [x] Set up shared TypeScript types for board models, WebSocket messages, and action payloads.
-- [ ] Define environment variables for frontend and relay server.
+- [x] Define environment variables for frontend and relay server.
 - [ ] Add Docker setup for frontend and Go relay server.
 
 ## Phase 1: Relay Server Foundation

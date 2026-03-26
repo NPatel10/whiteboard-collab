@@ -10,16 +10,22 @@ import (
 	"syscall"
 	"time"
 
+	"whiteboard-relay/internal/config"
 	"whiteboard-relay/internal/httpapi"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	startedAt := time.Now().UTC()
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("failed to load relay configuration", "error", err)
+		os.Exit(1)
+	}
 
 	server := &http.Server{
-		Addr:              envOrDefault("RELAY_ADDR", ":8080"),
-		Handler:           httpapi.NewRouter(startedAt),
+		Addr:              cfg.Addr,
+		Handler:           httpapi.NewRouter(startedAt, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -27,7 +33,15 @@ func main() {
 	defer stop()
 
 	go func() {
-		logger.Info("relay server starting", "addr", server.Addr)
+		logger.Info(
+			"relay server starting",
+			"addr",
+			server.Addr,
+			"max_participants_per_board",
+			cfg.MaxParticipantsPerBoard,
+			"join_code_length",
+			cfg.JoinCodeLength,
+		)
 
 		err := server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -48,13 +62,4 @@ func main() {
 	}
 
 	logger.Info("relay server stopped")
-}
-
-func envOrDefault(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-
-	return value
 }

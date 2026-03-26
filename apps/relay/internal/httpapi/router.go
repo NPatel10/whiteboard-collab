@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"whiteboard-relay/internal/config"
 )
 
 type healthResponse struct {
@@ -22,7 +24,7 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewRouter(startedAt time.Time) http.Handler {
+func NewRouter(startedAt time.Time, cfg config.Config) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /", func(writer http.ResponseWriter, _ *http.Request) {
@@ -42,10 +44,10 @@ func NewRouter(startedAt time.Time) http.Handler {
 	mux.HandleFunc("GET /api/v1/config", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
 		writeJSON(writer, http.StatusOK, configResponse{
-			MaxParticipantsPerBoard: 4,
-			JoinCodeLength:          8,
-			CodeTTLSeconds:          24 * 60 * 60,
-			HeartbeatIntervalSecs:   25,
+			MaxParticipantsPerBoard: cfg.MaxParticipantsPerBoard,
+			JoinCodeLength:          cfg.JoinCodeLength,
+			CodeTTLSeconds:          cfg.CodeTTLSeconds(),
+			HeartbeatIntervalSecs:   cfg.HeartbeatIntervalSeconds(),
 		})
 	})
 
