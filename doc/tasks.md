@@ -42,7 +42,7 @@
 - [x] Build landing state with `Create board` and `Join board` flows.
 - [x] Build join form with code and nickname inputs.
 - [x] Add app-level connection state store.
-- [ ] Add socket client with reconnect logic.
+- [x] Add socket client with reconnect logic.
 - [x] Add session stores for actor id, board id, join code, role, and participants.
 - [x] Add invalid-code, board-full, and reconnecting UI states.
 
