@@ -5,6 +5,7 @@ import type {
 	BoardState,
 	ISODateTimeString
 } from './types.js';
+import { importBoardSnapshotFromJson } from './board-json.js';
 
 export interface LocalBoardSnapshot {
 	snapshotVersion: number;
@@ -93,6 +94,12 @@ export class LocalBoardStore {
 
 	loadSnapshot(snapshot: LocalBoardSnapshot | BoardSnapshotPayload) {
 		this.replaceSnapshot(snapshot);
+	}
+
+	importFromJson(jsonText: string) {
+		const snapshot = importBoardSnapshotFromJson(jsonText);
+		this.replaceSnapshot(snapshot);
+		return snapshot;
 	}
 
 	appendAction<TKind extends BoardActionKind>(

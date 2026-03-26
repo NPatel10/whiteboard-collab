@@ -51,6 +51,34 @@ function createAction(): BoardActionPayload<'shape.create'> {
 	};
 }
 
+function createBoardStateJson() {
+	return JSON.stringify({
+		elements: [
+			{
+				id: 'shape_1',
+				kind: 'shape',
+				created_by: 'actor_1',
+				created_at: '2026-03-26T10:30:00.000Z',
+				updated_at: '2026-03-26T10:30:00.000Z',
+				shape: 'ellipse',
+				x: 40,
+				y: 50,
+				width: 120,
+				height: 80,
+				rotation: 0,
+				stroke: '#111827',
+				fill: '#fef3c7',
+				stroke_width: 2
+			}
+		],
+		viewport: {
+			x: 16,
+			y: 24,
+			zoom: 1.25
+		}
+	});
+}
+
 describe('LocalBoardStore', () => {
 	it('replaces the board snapshot and clones incoming data', () => {
 		const store = new LocalBoardStore();
@@ -95,6 +123,42 @@ describe('LocalBoardStore', () => {
 
 		const loggedAction = store.actionLog[0].action as BoardActionPayload<'shape.create'>;
 		expect(loggedAction.data.x).toBe(100);
+	});
+
+	it('imports a board state from json into the store', () => {
+		const store = new LocalBoardStore();
+		const snapshot = store.importFromJson(createBoardStateJson());
+
+		expect(snapshot.snapshotVersion).toBe(1);
+		expect(snapshot.actionCursor).toBe(0);
+		expect(store.hasSnapshot).toBe(true);
+		expect(store.snapshotVersion).toBe(1);
+		expect(store.actionCursor).toBe(0);
+		expect(store.boardState).toEqual({
+			elements: [
+				{
+					id: 'shape_1',
+					kind: 'shape',
+					created_by: 'actor_1',
+					created_at: '2026-03-26T10:30:00.000Z',
+					updated_at: '2026-03-26T10:30:00.000Z',
+					shape: 'ellipse',
+					x: 40,
+					y: 50,
+					width: 120,
+					height: 80,
+					rotation: 0,
+					stroke: '#111827',
+					fill: '#fef3c7',
+					stroke_width: 2
+				}
+			],
+			viewport: {
+				x: 16,
+				y: 24,
+				zoom: 1.25
+			}
+		});
 	});
 
 	it('clears board state and log entries', () => {
