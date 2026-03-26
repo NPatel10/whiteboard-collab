@@ -12,7 +12,7 @@
 
 - [ ] Create Go service skeleton with WebSocket endpoint at `/api/v1/ws`.
 - [ ] Add HTTP endpoints for `/api/v1/healthz` and `/api/v1/config`.
-- [ ] Implement in-memory room store for board sessions and join codes.
+- [x] Implement in-memory room store for board sessions and join codes.
 - [ ] Implement 8-character alphanumeric code generation.
 - [ ] Implement last-activity based 24-hour expiry handling.
 - [ ] Implement board capacity limit of 4 participants.
