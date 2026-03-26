@@ -51,7 +51,7 @@
 - [x] Define board element model for strokes, shapes, text, and sticky notes.
 - [x] Define viewport model for pan and zoom.
 - [x] Implement local board store with snapshot and action log.
-- [ ] Implement action ids and per-client sequence numbers.
+- [x] Implement action ids and per-client sequence numbers.
 - [ ] Implement draw pipeline with throttled or batched actions.
 - [ ] Implement selection and transform behavior.
 - [ ] Implement delete behavior.
