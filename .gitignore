@@ -1,0 +1,33 @@
+# Dependencies
+node_modules
+apps/*/node_modules
+
+# Frontend build output
+apps/*/.svelte-kit
+apps/*/.vercel
+apps/*/.netlify
+apps/*/.wrangler
+apps/*/build
+apps/*/.output
+apps/*/test-results
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Go build output
+bin/
+dist/
+*.exe
+*.test
+coverage.out
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+
+doc/

@@ -1,0 +1,15 @@
+{
+  "name": "collab-whiteboard",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "bun --cwd apps/web run dev",
+    "build:web": "bun --cwd apps/web run build",
+    "check:web": "bun --cwd apps/web run check",
+    "test:web": "bun --cwd apps/web run test",
+    "dev:relay": "go run ./apps/relay/cmd/relay",
+    "build:relay": "go build ./apps/relay/cmd/relay"
+  }
+}
