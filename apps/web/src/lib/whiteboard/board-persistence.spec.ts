@@ -4,7 +4,11 @@ import {
 	getCreatorBoardActionLogStorageKey,
 	getCreatorBoardSnapshotStorageKey,
 	persistCreatorBoardActionLog,
-	persistCreatorBoardSnapshot
+	persistCreatorBoardSnapshot,
+	restoreCreatorBoardActionLog,
+	restoreCreatorBoardSnapshot,
+	restoreCreatorBoardState,
+	CreatorBoardStorageError
 } from './board-persistence.svelte.js';
 import type { BoardActionLogEntry } from './board-store.svelte.js';
 import type { LocalBoardSnapshot } from './board-store.svelte.js';
@@ -61,6 +65,19 @@ function createActionLog(): BoardActionLogEntry[] {
 	];
 }
 
+function createStorage(initialValues: Record<string, string> = {}) {
+	const values = new Map(Object.entries(initialValues));
+
+	return {
+		getItem(key: string) {
+			return values.get(key) ?? null;
+		},
+		setItem(key: string, value: string) {
+			values.set(key, value);
+		}
+	};
+}
+
 describe('creator board snapshot persistence', () => {
 	it('builds a stable storage key from the board id', () => {
 		expect(getCreatorBoardSnapshotStorageKey(' board_1 ')).toBe('whiteboard:creator-snapshot:board_1');
@@ -73,6 +90,9 @@ describe('creator board snapshot persistence', () => {
 		const didPersist = persistCreatorBoardSnapshot('board_1', snapshot, {
 			isBrowser: true,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -94,6 +114,9 @@ describe('creator board snapshot persistence', () => {
 		const didPersist = persistCreatorBoardSnapshot('board_1', createSnapshot(), {
 			isBrowser: false,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -119,6 +142,9 @@ describe('creator board action log persistence', () => {
 		const didPersist = persistCreatorBoardActionLog('board_1', actionLog, {
 			isBrowser: true,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -140,6 +166,9 @@ describe('creator board action log persistence', () => {
 		const didPersist = persistCreatorBoardActionLog('board_1', createActionLog(), {
 			isBrowser: false,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -148,5 +177,44 @@ describe('creator board action log persistence', () => {
 
 		expect(didPersist).toBe(false);
 		expect(written).toEqual([]);
+	});
+});
+
+describe('creator board restore', () => {
+	it('restores snapshot and action log payloads from storage', () => {
+		const snapshot = createSnapshot();
+		const actionLog = createActionLog();
+		const storage = createStorage({
+			[getCreatorBoardSnapshotStorageKey('board_1')]: JSON.stringify(snapshot),
+			[getCreatorBoardActionLogStorageKey('board_1')]: JSON.stringify(actionLog)
+		});
+
+		expect(restoreCreatorBoardSnapshot('board_1', { isBrowser: true, storage })).toEqual(snapshot);
+		expect(restoreCreatorBoardActionLog('board_1', { isBrowser: true, storage })).toEqual(actionLog);
+		expect(restoreCreatorBoardState('board_1', { isBrowser: true, storage })).toEqual({
+			snapshot,
+			actionLog
+		});
+	});
+
+	it('returns an empty restore result when storage is missing', () => {
+		const storage = createStorage();
+
+		expect(restoreCreatorBoardSnapshot('board_1', { isBrowser: true, storage })).toBeNull();
+		expect(restoreCreatorBoardActionLog('board_1', { isBrowser: true, storage })).toEqual([]);
+		expect(restoreCreatorBoardState('board_1', { isBrowser: true, storage })).toEqual({
+			snapshot: null,
+			actionLog: []
+		});
+	});
+
+	it('rejects malformed stored payloads', () => {
+		const storage = createStorage({
+			[getCreatorBoardSnapshotStorageKey('board_1')]: 'not json'
+		});
+
+		expect(() => restoreCreatorBoardSnapshot('board_1', { isBrowser: true, storage })).toThrow(
+			CreatorBoardStorageError
+		);
 	});
 });

@@ -9,6 +9,7 @@ import { importBoardSnapshotFromJson } from './board-json.js';
 import {
 	persistCreatorBoardActionLog,
 	persistCreatorBoardSnapshot,
+	restoreCreatorBoardState,
 	type PersistCreatorBoardActionLogOptions,
 	type PersistCreatorBoardSnapshotOptions
 } from './board-persistence.svelte.js';
@@ -128,6 +129,20 @@ export class LocalBoardStore {
 		options: PersistCreatorBoardActionLogOptions = {}
 	) {
 		return persistCreatorBoardActionLog(boardId, this.actionLog, options);
+	}
+
+	restoreCreatorBoard(
+		boardId: string,
+		options: PersistCreatorBoardSnapshotOptions & PersistCreatorBoardActionLogOptions = {}
+	) {
+		const restoredState = restoreCreatorBoardState(boardId, options);
+		if (restoredState.snapshot === null) {
+			return false;
+		}
+
+		this.replaceSnapshot(restoredState.snapshot);
+		this.actionLog = restoredState.actionLog;
+		return true;
 	}
 
 	appendAction<TKind extends BoardActionKind>(

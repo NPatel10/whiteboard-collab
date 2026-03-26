@@ -51,6 +51,19 @@ function createAction(): BoardActionPayload<'shape.create'> {
 	};
 }
 
+function createStorage(initialValues: Record<string, string> = {}) {
+	const values = new Map(Object.entries(initialValues));
+
+	return {
+		getItem(key: string) {
+			return values.get(key) ?? null;
+		},
+		setItem(key: string, value: string) {
+			values.set(key, value);
+		}
+	};
+}
+
 function createBoardStateJson() {
 	return JSON.stringify({
 		elements: [
@@ -169,6 +182,9 @@ describe('LocalBoardStore', () => {
 		const didPersist = store.persistCreatorSnapshot('board_1', {
 			isBrowser: true,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -223,6 +239,9 @@ describe('LocalBoardStore', () => {
 		const didPersist = store.persistCreatorActionLog('board_1', {
 			isBrowser: true,
 			storage: {
+				getItem() {
+					return null;
+				},
 				setItem(key, value) {
 					written.push({ key, value });
 				}
@@ -245,6 +264,58 @@ describe('LocalBoardStore', () => {
 		action.data.x = 999;
 
 		expect(written[0].value).toContain('"x":100');
+	});
+
+	it('restores creator board state from storage', () => {
+		const snapshot = createSnapshot();
+		const action = createAction();
+		const storage = createStorage({
+			'whiteboard:creator-snapshot:board_1': JSON.stringify({
+				snapshotVersion: snapshot.snapshot_version,
+				actionCursor: snapshot.action_cursor,
+				boardState: {
+					elements: snapshot.board_state.elements,
+					viewport: snapshot.board_state.viewport
+				}
+			}),
+			'whiteboard:creator-action-log:board_1': JSON.stringify([
+				{
+					action,
+					receivedAt: '2026-03-26T10:31:00.000Z'
+				}
+			])
+		});
+
+		const store = new LocalBoardStore();
+		const didRestore = store.restoreCreatorBoard('board_1', {
+			isBrowser: true,
+			storage
+		});
+
+		expect(didRestore).toBe(true);
+		expect(store.snapshotVersion).toBe(7);
+		expect(store.actionCursor).toBe(42);
+		expect(store.boardState).toEqual(snapshot.board_state);
+		expect(store.actionLog).toEqual([
+			{
+				action,
+				receivedAt: '2026-03-26T10:31:00.000Z'
+			}
+		]);
+	});
+
+	it('does not restore when snapshot storage is missing', () => {
+		const store = new LocalBoardStore();
+
+		expect(
+			store.restoreCreatorBoard('board_1', {
+				isBrowser: true,
+				storage: createStorage()
+			})
+		).toBe(false);
+
+		expect(store.hasSnapshot).toBe(false);
+		expect(store.actionLog).toEqual([]);
 	});
 
 	it('clears board state and log entries', () => {
