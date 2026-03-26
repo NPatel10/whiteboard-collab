@@ -57,7 +57,7 @@ func TestStoreCreateBoardAndLookupByJoinCode(t *testing.T) {
 func TestStoreJoinBoardHonorsCapacity(t *testing.T) {
 	t.Parallel()
 
-	store, err := New(2)
+	store, err := New(4)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -78,34 +78,36 @@ func TestStoreJoinBoardHonorsCapacity(t *testing.T) {
 		t.Fatalf("CreateBoard() error = %v", err)
 	}
 
-	joined, err := store.JoinBoard(JoinBoardParams{
-		JoinCode: "A7F3KQ9X",
-		Participant: Participant{
-			ActorID:  "guest_1",
-			DeviceID: "device_guest_1",
-			Nickname: "Guest 1",
-			Role:     RoleGuest,
-			Color:    "#22c55e",
-		},
-	}, now.Add(30*time.Second))
-	if err != nil {
-		t.Fatalf("JoinBoard() error = %v", err)
-	}
+	for index, actorID := range []string{"guest_1", "guest_2", "guest_3"} {
+		joined, err := store.JoinBoard(JoinBoardParams{
+			JoinCode: "A7F3KQ9X",
+			Participant: Participant{
+				ActorID:  actorID,
+				DeviceID: "device_" + actorID,
+				Nickname: "Guest " + string(rune('1'+index)),
+				Role:     RoleGuest,
+				Color:    "#22c55e",
+			},
+		}, now.Add(time.Duration(index+1)*30*time.Second))
+		if err != nil {
+			t.Fatalf("JoinBoard() guest %d error = %v", index+1, err)
+		}
 
-	if len(joined.Participants) != 2 {
-		t.Fatalf("JoinBoard() participants len = %d, want 2", len(joined.Participants))
+		if got, want := len(joined.Participants), index+2; got != want {
+			t.Fatalf("JoinBoard() participants len = %d, want %d", got, want)
+		}
 	}
 
 	_, err = store.JoinBoard(JoinBoardParams{
 		JoinCode: "A7F3KQ9X",
 		Participant: Participant{
-			ActorID:  "guest_2",
-			DeviceID: "device_guest_2",
-			Nickname: "Guest 2",
+			ActorID:  "guest_4",
+			DeviceID: "device_guest_4",
+			Nickname: "Guest 4",
 			Role:     RoleGuest,
 			Color:    "#38bdf8",
 		},
-	}, now.Add(time.Minute))
+	}, now.Add(2*time.Minute))
 	if !errors.Is(err, ErrBoardFull) {
 		t.Fatalf("JoinBoard() error = %v, want %v", err, ErrBoardFull)
 	}

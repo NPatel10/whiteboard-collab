@@ -15,7 +15,7 @@
 - [x] Implement in-memory room store for board sessions and join codes.
 - [x] Implement 8-character alphanumeric code generation.
 - [x] Implement last-activity based 24-hour expiry handling.
-- [ ] Implement board capacity limit of 4 participants.
+- [x] Implement board capacity limit of 4 participants.
 - [ ] Implement heartbeat handling and idle cleanup.
 - [ ] Implement per-IP and per-code rate limiting.
 - [ ] Add structured logging and error responses.
