@@ -53,8 +53,8 @@
 - [x] Implement local board store with snapshot and action log.
 - [x] Implement action ids and per-client sequence numbers.
 - [ ] Implement draw pipeline with throttled or batched actions.
-- [ ] Implement selection and transform behavior.
-- [ ] Implement delete behavior.
+- [x] Implement selection and transform behavior.
+- [x] Implement delete behavior.
 - [ ] Implement per-user undo and redo stacks.
 - [x] Implement import from JSON.
 - [ ] Implement export to JSON and PNG.

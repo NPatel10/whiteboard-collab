@@ -92,6 +92,81 @@ function createBoardStateJson() {
 	});
 }
 
+function createEditableSnapshot(): BoardSnapshotPayload {
+	return {
+		target_actor_id: 'actor_1',
+		snapshot_version: 11,
+		action_cursor: 88,
+		board_state: {
+			elements: [
+				{
+					id: 'stroke_1',
+					kind: 'stroke',
+					created_by: 'actor_1',
+					created_at: '2026-03-26T10:30:00.000Z',
+					updated_at: '2026-03-26T10:30:00.000Z',
+					stroke: '#0f172a',
+					stroke_width: 4,
+					points: [
+						{ x: 12, y: 18, pressure: 0.4 },
+						{ x: 24, y: 30, pressure: 0.8 }
+					]
+				},
+				{
+					id: 'shape_1',
+					kind: 'shape',
+					created_by: 'actor_1',
+					created_at: '2026-03-26T10:31:00.000Z',
+					updated_at: '2026-03-26T10:31:00.000Z',
+					shape: 'rectangle',
+					x: 140,
+					y: 160,
+					width: 200,
+					height: 120,
+					rotation: 0,
+					stroke: '#111827',
+					fill: '#fef3c7',
+					stroke_width: 2
+				},
+				{
+					id: 'text_1',
+					kind: 'text',
+					created_by: 'actor_1',
+					created_at: '2026-03-26T10:32:00.000Z',
+					updated_at: '2026-03-26T10:32:00.000Z',
+					x: 260,
+					y: 280,
+					width: 180,
+					height: 80,
+					text: 'Editable note',
+					font_size: 24,
+					color: '#111827',
+					align: 'left'
+				},
+				{
+					id: 'sticky_1',
+					kind: 'sticky',
+					created_by: 'actor_1',
+					created_at: '2026-03-26T10:33:00.000Z',
+					updated_at: '2026-03-26T10:33:00.000Z',
+					x: 420,
+					y: 440,
+					width: 220,
+					height: 160,
+					text: 'Move me',
+					background: '#fef08a',
+					color: '#111827'
+				}
+			],
+			viewport: {
+				x: 16,
+				y: 24,
+				zoom: 1.25
+			}
+		}
+	};
+}
+
 describe('LocalBoardStore', () => {
 	it('replaces the board snapshot and clones incoming data', () => {
 		const store = new LocalBoardStore();
@@ -172,6 +247,108 @@ describe('LocalBoardStore', () => {
 				zoom: 1.25
 			}
 		});
+	});
+
+	it('tracks selection, transforms supported elements, and deletes targeted objects', () => {
+		const store = new LocalBoardStore();
+		store.replaceSnapshot(createEditableSnapshot());
+
+		expect(store.updateSelection(['shape_1', 'missing', 'sticky_1', 'shape_1'])).toEqual([
+			'shape_1',
+			'sticky_1'
+		]);
+		expect(store.hasSelection).toBe(true);
+
+		expect(
+			store.transformObject(
+				'shape_1',
+				{
+					x: 180,
+					y: 200,
+					width: 240,
+					height: 140,
+					rotation: 25
+				},
+				'2026-03-26T10:40:00.000Z'
+			)
+		).toBe(true);
+		expect(
+			store.applyTransformUpdate(
+				{
+					object_id: 'text_1',
+					x: 300,
+					y: 320,
+					width: 240,
+					height: 96
+				},
+				'2026-03-26T10:41:00.000Z'
+			)
+		).toBe(true);
+		expect(
+			store.applyTransformUpdate(
+				{
+					object_id: 'sticky_1',
+					x: 460,
+					y: 480,
+					width: 260,
+					height: 180
+				},
+				'2026-03-26T10:42:00.000Z'
+			)
+		).toBe(true);
+		expect(
+			store.transformObject(
+				'stroke_1',
+				{
+					x: 0,
+					y: 0
+				},
+				'2026-03-26T10:43:00.000Z'
+			)
+		).toBe(false);
+
+		const shape = store.boardState.elements.find((element) => element.id === 'shape_1');
+		const text = store.boardState.elements.find((element) => element.id === 'text_1');
+		const sticky = store.boardState.elements.find((element) => element.id === 'sticky_1');
+
+		if (!shape || !text || !sticky) {
+			throw new Error('expected editable elements to exist');
+		}
+
+		expect(shape).toMatchObject({
+			x: 180,
+			y: 200,
+			width: 240,
+			height: 140,
+			rotation: 25,
+			updated_at: '2026-03-26T10:40:00.000Z'
+		});
+		expect(text).toMatchObject({
+			x: 300,
+			y: 320,
+			width: 240,
+			height: 96,
+			updated_at: '2026-03-26T10:41:00.000Z'
+		});
+		expect(sticky).toMatchObject({
+			x: 460,
+			y: 480,
+			width: 260,
+			height: 180,
+			updated_at: '2026-03-26T10:42:00.000Z'
+		});
+
+		expect(store.updateSelection(['text_1', 'missing'])).toEqual(['text_1']);
+		expect(store.deleteSelectedObjects()).toBe(true);
+		expect(store.boardState.elements.map((element) => element.id)).toEqual([
+			'stroke_1',
+			'shape_1',
+			'sticky_1'
+		]);
+		expect(store.selectedObjectIds).toEqual([]);
+		expect(store.deleteObject('shape_1')).toBe(true);
+		expect(store.deleteObject('missing')).toBe(false);
+		expect(store.boardState.elements.map((element) => element.id)).toEqual(['stroke_1', 'sticky_1']);
 	});
 
 	it('persists creator snapshots without exposing live store state', () => {

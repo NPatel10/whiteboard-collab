@@ -1,9 +1,13 @@
 import type {
 	BoardActionKind,
 	BoardActionPayload,
+	BoardElement,
 	BoardSnapshotPayload,
 	BoardState,
-	ISODateTimeString
+	ISODateTimeString,
+	ObjectId,
+	SelectionUpdateActionData,
+	TransformUpdateActionData
 } from './types.js';
 import { importBoardSnapshotFromJson } from './board-json.js';
 import {
@@ -38,6 +42,10 @@ function createEmptyBoardState(): BoardState {
 			zoom: 1
 		}
 	};
+}
+
+function createEmptySelection() {
+	return [] as ObjectId[];
 }
 
 function cloneSerializable<T>(value: T): T {
@@ -81,14 +89,80 @@ function normalizeActionEntry<TKind extends BoardActionKind>(
 	};
 }
 
+function normalizeObjectIds(objectIds: readonly ObjectId[], elements: BoardElement[]) {
+	const existingObjectIds = new Set(elements.map((element) => element.id));
+	const seenObjectIds = new Set<string>();
+	const normalizedObjectIds: ObjectId[] = [];
+
+	for (const objectId of objectIds) {
+		const normalizedObjectId = objectId.trim();
+		if (
+			normalizedObjectId === '' ||
+			seenObjectIds.has(normalizedObjectId) ||
+			!existingObjectIds.has(normalizedObjectId)
+		) {
+			continue;
+		}
+
+		seenObjectIds.add(normalizedObjectId);
+		normalizedObjectIds.push(normalizedObjectId);
+	}
+
+	return normalizedObjectIds;
+}
+
+function transformBoardElement(
+	element: BoardElement,
+	patch: Omit<TransformUpdateActionData, 'object_id'>,
+	updatedAt: ISODateTimeString
+): BoardElement | null {
+	switch (element.kind) {
+		case 'shape':
+			return {
+				...element,
+				x: patch.x,
+				y: patch.y,
+				width: patch.width ?? element.width,
+				height: patch.height ?? element.height,
+				rotation: patch.rotation ?? element.rotation,
+				updated_at: updatedAt
+			};
+		case 'text':
+			return {
+				...element,
+				x: patch.x,
+				y: patch.y,
+				width: patch.width ?? element.width,
+				height: patch.height ?? element.height,
+				updated_at: updatedAt
+			};
+		case 'sticky':
+			return {
+				...element,
+				x: patch.x,
+				y: patch.y,
+				width: patch.width ?? element.width,
+				height: patch.height ?? element.height,
+				updated_at: updatedAt
+			};
+		default:
+			return null;
+	}
+}
+
 export class LocalBoardStore {
 	snapshotVersion = $state(0);
 	actionCursor = $state(0);
 	boardState = $state<BoardState>(createEmptyBoardState());
 	actionLog = $state<BoardActionLogEntry[]>([]);
+	selectedObjectIds = $state<ObjectId[]>(createEmptySelection());
 
 	get hasSnapshot() {
 		return this.snapshotVersion > 0;
+	}
+
+	get hasSelection() {
+		return this.selectedObjectIds.length > 0;
 	}
 
 	get actionCount() {
@@ -109,6 +183,7 @@ export class LocalBoardStore {
 		this.actionCursor = normalized.actionCursor;
 		this.boardState = normalized.boardState;
 		this.actionLog = [];
+		this.selectedObjectIds = createEmptySelection();
 	}
 
 	loadSnapshot(snapshot: LocalBoardSnapshot | BoardSnapshotPayload) {
@@ -119,6 +194,88 @@ export class LocalBoardStore {
 		const snapshot = importBoardSnapshotFromJson(jsonText);
 		this.replaceSnapshot(snapshot);
 		return snapshot;
+	}
+
+	updateSelection(objectIds: readonly ObjectId[]) {
+		this.selectedObjectIds = normalizeObjectIds(objectIds, this.boardState.elements);
+		return this.selectedObjectIds;
+	}
+
+	applySelectionUpdate(payload: SelectionUpdateActionData) {
+		return this.updateSelection(payload.object_ids);
+	}
+
+	clearSelection() {
+		this.selectedObjectIds = createEmptySelection();
+	}
+
+	transformObject(
+		objectId: ObjectId,
+		patch: Omit<TransformUpdateActionData, 'object_id'>,
+		updatedAt: Date | ISODateTimeString = new Date()
+	) {
+		const normalizedObjectId = objectId.trim();
+		if (normalizedObjectId === '') {
+			return false;
+		}
+
+		const updatedAtIso = toIsoString(updatedAt);
+		let transformed = false;
+		const nextElements = this.boardState.elements.map((element) => {
+			if (element.id !== normalizedObjectId) {
+				return element;
+			}
+
+			const updatedElement = transformBoardElement(element, patch, updatedAtIso);
+			if (updatedElement === null) {
+				return element;
+			}
+
+			transformed = true;
+			return updatedElement;
+		});
+
+		if (!transformed) {
+			return false;
+		}
+
+		this.boardState = {
+			...this.boardState,
+			elements: nextElements
+		};
+		return true;
+	}
+
+	applyTransformUpdate(payload: TransformUpdateActionData, updatedAt: Date | ISODateTimeString = new Date()) {
+		return this.transformObject(payload.object_id, payload, updatedAt);
+	}
+
+	deleteObject(objectId: ObjectId) {
+		return this.deleteObjects([objectId]);
+	}
+
+	deleteSelectedObjects() {
+		return this.deleteObjects(this.selectedObjectIds);
+	}
+
+	deleteObjects(objectIds: readonly ObjectId[]) {
+		const normalizedObjectIds = normalizeObjectIds(objectIds, this.boardState.elements);
+		if (normalizedObjectIds.length === 0) {
+			return false;
+		}
+
+		const objectIdSet = new Set(normalizedObjectIds);
+		const nextElements = this.boardState.elements.filter((element) => !objectIdSet.has(element.id));
+		if (nextElements.length === this.boardState.elements.length) {
+			return false;
+		}
+
+		this.boardState = {
+			...this.boardState,
+			elements: nextElements
+		};
+		this.selectedObjectIds = this.selectedObjectIds.filter((objectId) => !objectIdSet.has(objectId));
+		return true;
 	}
 
 	persistCreatorSnapshot(
@@ -187,6 +344,7 @@ export class LocalBoardStore {
 		this.actionCursor = 0;
 		this.boardState = createEmptyBoardState();
 		this.actionLog = [];
+		this.selectedObjectIds = createEmptySelection();
 	}
 }
 
