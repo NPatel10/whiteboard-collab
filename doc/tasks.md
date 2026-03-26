@@ -26,7 +26,7 @@
 - [x] Implement `session.join`.
 - [x] Implement `session.join_rejected`.
 - [x] Implement `session.created` and `session.joined`.
-- [ ] Implement `participant.joined` and `participant.left`.
+- [x] Implement `participant.joined` and `participant.left`.
 - [ ] Implement `board.snapshot.request`.
 - [ ] Implement `board.snapshot`.
 - [ ] Implement `board.snapshot.ack`.

@@ -47,6 +47,11 @@ type wsSessionJoinRejectedPayload struct {
 	Reason string `json:"reason"`
 }
 
+type wsParticipantLeftPayload struct {
+	ActorID string `json:"actor_id"`
+	Reason  string `json:"reason"`
+}
+
 type wsErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -290,6 +295,251 @@ func TestWebSocketSessionJoin(t *testing.T) {
 
 	if joinPayload.Participants[1].Role != "guest" {
 		t.Fatalf("second participant role = %q, want %q", joinPayload.Participants[1].Role, "guest")
+	}
+}
+
+func TestWebSocketParticipantJoinedNotifiesExistingParticipants(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	ownerCreateRequest := map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_owner_for_participant_joined",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_1",
+		},
+	}
+	if err := ownerConn.WriteJSON(ownerCreateRequest); err != nil {
+		t.Fatalf("write owner session.create message: %v", err)
+	}
+
+	_, ownerCreatedRaw, err := ownerConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read owner session.created message: %v", err)
+	}
+
+	var ownerCreatedEnvelope wsMessage
+	if err := json.Unmarshal(ownerCreatedRaw, &ownerCreatedEnvelope); err != nil {
+		t.Fatalf("decode owner session.created envelope: %v", err)
+	}
+
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	guestJoinRequest := map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_for_participant_joined",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest 1",
+			"device_id": "device_guest_1",
+		},
+	}
+	if err := guestConn.WriteJSON(guestJoinRequest); err != nil {
+		t.Fatalf("write guest session.join message: %v", err)
+	}
+
+	_, guestJoinedRaw, err := guestConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read guest session.joined message: %v", err)
+	}
+
+	var guestJoinedEnvelope wsMessage
+	if err := json.Unmarshal(guestJoinedRaw, &guestJoinedEnvelope); err != nil {
+		t.Fatalf("decode guest session.joined envelope: %v", err)
+	}
+
+	if err := ownerConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set owner read deadline: %v", err)
+	}
+
+	_, ownerEventRaw, err := ownerConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read owner participant.joined message: %v", err)
+	}
+
+	if err := ownerConn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear owner read deadline: %v", err)
+	}
+
+	var ownerEventEnvelope wsMessage
+	if err := json.Unmarshal(ownerEventRaw, &ownerEventEnvelope); err != nil {
+		t.Fatalf("decode owner participant.joined envelope: %v", err)
+	}
+
+	if ownerEventEnvelope.Type != "participant.joined" {
+		t.Fatalf("event type = %q, want %q", ownerEventEnvelope.Type, "participant.joined")
+	}
+
+	if ownerEventEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("event board id = %q, want %q", ownerEventEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if ownerEventEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("event actor id = %q, want %q", ownerEventEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	var ownerEventPayload wsParticipantSummary
+	if err := json.Unmarshal(ownerEventEnvelope.Payload, &ownerEventPayload); err != nil {
+		t.Fatalf("decode owner participant.joined payload: %v", err)
+	}
+
+	if ownerEventPayload.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("payload actor id = %q, want %q", ownerEventPayload.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if ownerEventPayload.Nickname != "Guest 1" {
+		t.Fatalf("payload nickname = %q, want %q", ownerEventPayload.Nickname, "Guest 1")
+	}
+
+	if ownerEventPayload.Role != "guest" {
+		t.Fatalf("payload role = %q, want %q", ownerEventPayload.Role, "guest")
+	}
+}
+
+func TestWebSocketParticipantLeftNotifiesRemainingParticipantsOnDisconnect(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	ownerCreateRequest := map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_owner_for_participant_left",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_1",
+		},
+	}
+	if err := ownerConn.WriteJSON(ownerCreateRequest); err != nil {
+		t.Fatalf("write owner session.create message: %v", err)
+	}
+
+	_, ownerCreatedRaw, err := ownerConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read owner session.created message: %v", err)
+	}
+
+	var ownerCreatedEnvelope wsMessage
+	if err := json.Unmarshal(ownerCreatedRaw, &ownerCreatedEnvelope); err != nil {
+		t.Fatalf("decode owner session.created envelope: %v", err)
+	}
+
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+
+	guestJoinRequest := map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_for_participant_left",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest 1",
+			"device_id": "device_guest_1",
+		},
+	}
+	if err := guestConn.WriteJSON(guestJoinRequest); err != nil {
+		t.Fatalf("write guest session.join message: %v", err)
+	}
+
+	_, guestJoinedRaw, err := guestConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read guest session.joined message: %v", err)
+	}
+
+	var guestJoinedEnvelope wsMessage
+	if err := json.Unmarshal(guestJoinedRaw, &guestJoinedEnvelope); err != nil {
+		t.Fatalf("decode guest session.joined envelope: %v", err)
+	}
+
+	if err := ownerConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set owner read deadline for participant.joined: %v", err)
+	}
+
+	_, joinedEventRaw, err := ownerConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read owner participant.joined message: %v", err)
+	}
+
+	var joinedEventEnvelope wsMessage
+	if err := json.Unmarshal(joinedEventRaw, &joinedEventEnvelope); err != nil {
+		t.Fatalf("decode owner participant.joined envelope: %v", err)
+	}
+
+	if joinedEventEnvelope.Type != "participant.joined" {
+		t.Fatalf("event type = %q, want %q", joinedEventEnvelope.Type, "participant.joined")
+	}
+
+	if err := guestConn.Close(); err != nil {
+		t.Fatalf("close guest websocket: %v", err)
+	}
+
+	_, leftEventRaw, err := ownerConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read owner participant.left message: %v", err)
+	}
+
+	if err := ownerConn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear owner read deadline: %v", err)
+	}
+
+	var leftEventEnvelope wsMessage
+	if err := json.Unmarshal(leftEventRaw, &leftEventEnvelope); err != nil {
+		t.Fatalf("decode owner participant.left envelope: %v", err)
+	}
+
+	if leftEventEnvelope.Type != "participant.left" {
+		t.Fatalf("event type = %q, want %q", leftEventEnvelope.Type, "participant.left")
+	}
+
+	if leftEventEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("event board id = %q, want %q", leftEventEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if leftEventEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("event actor id = %q, want %q", leftEventEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	var leftEventPayload wsParticipantLeftPayload
+	if err := json.Unmarshal(leftEventEnvelope.Payload, &leftEventPayload); err != nil {
+		t.Fatalf("decode owner participant.left payload: %v", err)
+	}
+
+	if leftEventPayload.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("payload actor id = %q, want %q", leftEventPayload.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if leftEventPayload.Reason != "disconnect" {
+		t.Fatalf("payload reason = %q, want %q", leftEventPayload.Reason, "disconnect")
 	}
 }
 

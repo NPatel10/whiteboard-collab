@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"whiteboard-relay/internal/config"
@@ -41,12 +42,15 @@ type errorDetails struct {
 }
 
 type Router struct {
-	startedAt         time.Time
-	cfg               config.Config
-	logger            *slog.Logger
-	store             *roomstore.Store
-	websocketUpgrader websocket.Upgrader
-	idGenerator       func(prefix string) (string, error)
+	startedAt          time.Time
+	cfg                config.Config
+	logger             *slog.Logger
+	store              *roomstore.Store
+	websocketUpgrader  websocket.Upgrader
+	idGenerator        func(prefix string) (string, error)
+	connectionMu       sync.RWMutex
+	connectionsByBoard map[string]map[string]*websocketClient
+	sessionByConn      map[*websocket.Conn]participantSession
 }
 
 func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http.Handler {
@@ -74,7 +78,9 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 		websocketUpgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		idGenerator: generatePrefixedID,
+		idGenerator:        generatePrefixedID,
+		connectionsByBoard: make(map[string]map[string]*websocketClient),
+		sessionByConn:      make(map[*websocket.Conn]participantSession),
 	}
 }
 
@@ -122,58 +128,71 @@ func (router *Router) handleWebSocket(writer http.ResponseWriter, request *http.
 	if err != nil {
 		return
 	}
+	client := &websocketClient{conn: conn}
+	defer router.handleSocketDisconnect(client)
 	defer conn.Close()
 
 	for {
-		messageType, data, err := conn.ReadMessage()
+		messageType, data, err := client.conn.ReadMessage()
 		if err != nil {
 			return
 		}
 
 		if messageType != websocket.TextMessage {
-			router.writeSocketError(conn, "", "invalid_message", "only text websocket messages are supported")
+			router.writeSocketError(client, "", "invalid_message", "only text websocket messages are supported")
 			continue
 		}
 
-		router.handleSocketMessage(conn, data)
+		router.handleSocketMessage(client, data)
 	}
 }
 
-func (router *Router) handleSocketMessage(conn *websocket.Conn, data []byte) {
+func (router *Router) handleSocketMessage(client *websocketClient, data []byte) {
 	var envelope inboundSocketEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		router.writeSocketError(conn, "", "invalid_message", "message must be a valid JSON socket envelope")
+		router.writeSocketError(client, "", "invalid_message", "message must be a valid JSON socket envelope")
 		return
 	}
 
 	switch strings.TrimSpace(envelope.Type) {
 	case "session.create":
-		router.handleSessionCreate(conn, envelope)
+		router.handleSessionCreate(client, envelope)
 	case "session.join":
-		router.handleSessionJoin(conn, envelope)
+		router.handleSessionJoin(client, envelope)
 	default:
-		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "unsupported socket message type")
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "unsupported socket message type")
 	}
 }
 
-func (router *Router) handleSessionCreate(conn *websocket.Conn, envelope inboundSocketEnvelope) {
+func (router *Router) handleSessionCreate(client *websocketClient, envelope inboundSocketEnvelope) {
+	if router.hasActiveSession(client) {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is already attached to a session")
+		return
+	}
+
 	var payload sessionCreatePayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.create payload is invalid JSON")
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "session.create payload is invalid JSON")
 		return
 	}
 
 	payload.Nickname = strings.TrimSpace(payload.Nickname)
 	payload.DeviceID = strings.TrimSpace(payload.DeviceID)
 	if payload.Nickname == "" || payload.DeviceID == "" {
-		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.create payload requires nickname and device_id")
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "session.create payload requires nickname and device_id")
 		return
 	}
 
 	session, ownerActorID, err := router.createOwnerSession(payload)
 	if err != nil {
 		router.logger.Error("failed to create board session", "error", err)
-		router.writeSocketError(conn, envelope.RequestID, "internal_error", "failed to create board session")
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to create board session")
+		return
+	}
+
+	if err := router.registerConnection(client, session.BoardID, ownerActorID); err != nil {
+		router.logger.Error("failed to register owner connection", "error", err)
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to register owner session")
 		return
 	}
 
@@ -192,15 +211,20 @@ func (router *Router) handleSessionCreate(conn *websocket.Conn, envelope inbound
 		},
 	}
 
-	if err := conn.WriteJSON(response); err != nil {
+	if err := client.WriteJSON(response); err != nil {
 		router.logger.Warn("failed to write session.created message", "error", err)
 	}
 }
 
-func (router *Router) handleSessionJoin(conn *websocket.Conn, envelope inboundSocketEnvelope) {
+func (router *Router) handleSessionJoin(client *websocketClient, envelope inboundSocketEnvelope) {
+	if router.hasActiveSession(client) {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is already attached to a session")
+		return
+	}
+
 	var payload sessionJoinPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.join payload is invalid JSON")
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "session.join payload is invalid JSON")
 		return
 	}
 
@@ -208,7 +232,7 @@ func (router *Router) handleSessionJoin(conn *websocket.Conn, envelope inboundSo
 	payload.Nickname = strings.TrimSpace(payload.Nickname)
 	payload.DeviceID = strings.TrimSpace(payload.DeviceID)
 	if payload.JoinCode == "" || payload.Nickname == "" || payload.DeviceID == "" {
-		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.join payload requires join_code, nickname, and device_id")
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "session.join payload requires join_code, nickname, and device_id")
 		return
 	}
 
@@ -216,16 +240,23 @@ func (router *Router) handleSessionJoin(conn *websocket.Conn, envelope inboundSo
 	if err != nil {
 		switch {
 		case errors.Is(err, roomstore.ErrJoinCodeNotFound):
-			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonInvalidCode)
+			router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonInvalidCode)
 		case errors.Is(err, roomstore.ErrBoardFull):
-			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonBoardFull)
+			router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonBoardFull)
 		case errors.Is(err, roomstore.ErrBoardNotFound):
-			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonBoardUnavailable)
+			router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonBoardUnavailable)
 		default:
 			router.logger.Error("failed to join board session", "error", err)
-			router.writeSocketError(conn, envelope.RequestID, "internal_error", "failed to join board session")
+			router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to join board session")
 		}
 
+		return
+	}
+
+	if err := router.registerConnection(client, session.BoardID, actorID); err != nil {
+		router.logger.Error("failed to register guest connection", "error", err)
+		_, _ = router.store.RemoveParticipant(session.BoardID, actorID, time.Now().UTC())
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to register guest session")
 		return
 	}
 
@@ -242,9 +273,156 @@ func (router *Router) handleSessionJoin(conn *websocket.Conn, envelope inboundSo
 		},
 	}
 
-	if err := conn.WriteJSON(response); err != nil {
+	if err := client.WriteJSON(response); err != nil {
 		router.logger.Warn("failed to write session.joined message", "error", err)
+		return
 	}
+
+	joinedParticipant, ok := findParticipantSummaryByActorID(session.Participants, actorID)
+	if !ok {
+		return
+	}
+
+	router.broadcastParticipantJoined(session.BoardID, actorID, joinedParticipant)
+}
+
+func (router *Router) hasActiveSession(client *websocketClient) bool {
+	router.connectionMu.RLock()
+	defer router.connectionMu.RUnlock()
+
+	_, exists := router.sessionByConn[client.conn]
+	return exists
+}
+
+func (router *Router) registerConnection(client *websocketClient, boardID, actorID string) error {
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	if _, exists := router.sessionByConn[client.conn]; exists {
+		return fmt.Errorf("connection is already attached to a session")
+	}
+
+	connectionsByActor, exists := router.connectionsByBoard[boardID]
+	if !exists {
+		connectionsByActor = make(map[string]*websocketClient)
+		router.connectionsByBoard[boardID] = connectionsByActor
+	}
+
+	connectionsByActor[actorID] = client
+	router.sessionByConn[client.conn] = participantSession{
+		BoardID: boardID,
+		ActorID: actorID,
+	}
+
+	return nil
+}
+
+func (router *Router) handleSocketDisconnect(client *websocketClient) {
+	session, ok := router.unregisterConnection(client)
+	if !ok {
+		return
+	}
+
+	_, err := router.store.RemoveParticipant(session.BoardID, session.ActorID, time.Now().UTC())
+	if err != nil && !errors.Is(err, roomstore.ErrBoardNotFound) && !errors.Is(err, roomstore.ErrParticipantNotFound) {
+		router.logger.Warn("failed to remove participant on disconnect", "error", err, "board_id", session.BoardID, "actor_id", session.ActorID)
+	}
+
+	router.broadcastParticipantLeft(session.BoardID, session.ActorID)
+}
+
+func (router *Router) unregisterConnection(client *websocketClient) (participantSession, bool) {
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	session, exists := router.sessionByConn[client.conn]
+	if !exists {
+		return participantSession{}, false
+	}
+
+	delete(router.sessionByConn, client.conn)
+
+	connectionsByActor, exists := router.connectionsByBoard[session.BoardID]
+	if !exists {
+		return session, true
+	}
+
+	delete(connectionsByActor, session.ActorID)
+	if len(connectionsByActor) == 0 {
+		delete(router.connectionsByBoard, session.BoardID)
+	}
+
+	return session, true
+}
+
+func (router *Router) broadcastParticipantJoined(boardID, actorID string, participant participantSummaryPayload) {
+	router.broadcastBoardEvent(boardID, actorID, outboundSocketEnvelope{
+		Type:    "participant.joined",
+		BoardID: boardID,
+		ActorID: actorID,
+		SentAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: participant,
+	})
+}
+
+func (router *Router) broadcastParticipantLeft(boardID, actorID string) {
+	router.broadcastBoardEvent(boardID, actorID, outboundSocketEnvelope{
+		Type:    "participant.left",
+		BoardID: boardID,
+		ActorID: actorID,
+		SentAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: participantLeftPayload{
+			ActorID: actorID,
+			Reason:  participantLeftReasonDisconnect,
+		},
+	})
+}
+
+func (router *Router) broadcastBoardEvent(boardID, skipActorID string, payload outboundSocketEnvelope) {
+	connections := router.connectionsForBoard(boardID, skipActorID)
+	for _, client := range connections {
+		if err := client.WriteJSON(payload); err != nil {
+			router.logger.Warn("failed to broadcast websocket event", "type", payload.Type, "board_id", boardID, "error", err)
+		}
+	}
+}
+
+func (router *Router) connectionsForBoard(boardID, skipActorID string) []*websocketClient {
+	router.connectionMu.RLock()
+	defer router.connectionMu.RUnlock()
+
+	connectionsByActor, exists := router.connectionsByBoard[boardID]
+	if !exists {
+		return nil
+	}
+
+	connections := make([]*websocketClient, 0, len(connectionsByActor))
+	for actorID, client := range connectionsByActor {
+		if actorID == skipActorID {
+			continue
+		}
+
+		connections = append(connections, client)
+	}
+
+	return connections
+}
+
+func findParticipantSummaryByActorID(participants []roomstore.Participant, actorID string) (participantSummaryPayload, bool) {
+	for _, participant := range participants {
+		if participant.ActorID != actorID {
+			continue
+		}
+
+		return participantSummaryPayload{
+			ActorID:  participant.ActorID,
+			Nickname: participant.Nickname,
+			Role:     string(participant.Role),
+			Color:    participant.Color,
+		}, true
+	}
+
+	return participantSummaryPayload{}, false
 }
 
 func (router *Router) createOwnerSession(payload sessionCreatePayload) (roomstore.BoardSession, string, error) {
@@ -314,7 +492,7 @@ func buildParticipantSummaries(participants []roomstore.Participant) []participa
 	return summaries
 }
 
-func (router *Router) writeSocketError(conn *websocket.Conn, requestID, code, message string) {
+func (router *Router) writeSocketError(client *websocketClient, requestID, code, message string) {
 	payload := outboundSocketEnvelope{
 		Type:      "error",
 		RequestID: requestID,
@@ -325,12 +503,12 @@ func (router *Router) writeSocketError(conn *websocket.Conn, requestID, code, me
 		},
 	}
 
-	if err := conn.WriteJSON(payload); err != nil {
+	if err := client.WriteJSON(payload); err != nil {
 		router.logger.Warn("failed to write websocket error message", "error", err)
 	}
 }
 
-func (router *Router) writeSessionJoinRejected(conn *websocket.Conn, requestID, reason string) {
+func (router *Router) writeSessionJoinRejected(client *websocketClient, requestID, reason string) {
 	payload := outboundSocketEnvelope{
 		Type:      "session.join_rejected",
 		RequestID: requestID,
@@ -340,7 +518,7 @@ func (router *Router) writeSessionJoinRejected(conn *websocket.Conn, requestID, 
 		},
 	}
 
-	if err := conn.WriteJSON(payload); err != nil {
+	if err := client.WriteJSON(payload); err != nil {
 		router.logger.Warn("failed to write session.join_rejected message", "error", err)
 	}
 }
@@ -529,9 +707,31 @@ type participantSummaryPayload struct {
 	Color    string `json:"color"`
 }
 
+type participantLeftPayload struct {
+	ActorID string `json:"actor_id"`
+	Reason  string `json:"reason"`
+}
+
 type socketErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type participantSession struct {
+	BoardID string
+	ActorID string
+}
+
+type websocketClient struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
+func (client *websocketClient) WriteJSON(payload any) error {
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+
+	return client.conn.WriteJSON(payload)
 }
 
 const (
@@ -545,4 +745,5 @@ const (
 	joinRejectedReasonInvalidCode      = "invalid_code"
 	joinRejectedReasonBoardFull        = "board_full"
 	joinRejectedReasonBoardUnavailable = "board_unavailable"
+	participantLeftReasonDisconnect    = "disconnect"
 )
