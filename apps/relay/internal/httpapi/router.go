@@ -1,13 +1,21 @@
 package httpapi
 
 import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"whiteboard-relay/internal/config"
+	"whiteboard-relay/internal/roomstore"
+
+	"github.com/gorilla/websocket"
 )
 
 type healthResponse struct {
@@ -32,9 +40,12 @@ type errorDetails struct {
 }
 
 type Router struct {
-	startedAt time.Time
-	cfg       config.Config
-	logger    *slog.Logger
+	startedAt         time.Time
+	cfg               config.Config
+	logger            *slog.Logger
+	store             *roomstore.Store
+	websocketUpgrader websocket.Upgrader
+	idGenerator       func(prefix string) (string, error)
 }
 
 func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http.Handler {
@@ -42,10 +53,27 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 		logger = slog.Default()
 	}
 
+	cfg = normalizeRuntimeConfig(cfg)
+	storeOptions := []roomstore.Option{
+		roomstore.WithJoinCodeLength(cfg.JoinCodeLength),
+		roomstore.WithCodeTTL(cfg.CodeTTL),
+	}
+
+	store, err := roomstore.New(cfg.MaxParticipantsPerBoard, storeOptions...)
+	if err != nil {
+		logger.Error("failed to initialize room store", "error", err)
+		store, _ = roomstore.New(defaultMaxParticipantsPerBoard)
+	}
+
 	return &Router{
 		startedAt: startedAt,
 		cfg:       cfg,
 		logger:    logger.With("component", "relay.http"),
+		store:     store,
+		websocketUpgrader: websocket.Upgrader{
+			CheckOrigin: func(*http.Request) bool { return true },
+		},
+		idGenerator: generatePrefixedID,
 	}
 }
 
@@ -73,7 +101,7 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 			HeartbeatIntervalSecs:   router.cfg.HeartbeatIntervalSeconds(),
 		})
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/ws":
-		writeError(recorder, http.StatusNotImplemented, "not_implemented", "websocket relay endpoint is scaffolded but not implemented yet")
+		router.handleWebSocket(recorder, request)
 	case strings.HasPrefix(request.URL.Path, "/api/v1/"):
 		if request.Method != http.MethodGet {
 			writeError(recorder, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed for this route")
@@ -86,6 +114,159 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	router.logRequest(request, recorder, time.Since(started))
+}
+
+func (router *Router) handleWebSocket(writer http.ResponseWriter, request *http.Request) {
+	conn, err := router.websocketUpgrader.Upgrade(writer, request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		if messageType != websocket.TextMessage {
+			router.writeSocketError(conn, "", "invalid_message", "only text websocket messages are supported")
+			continue
+		}
+
+		router.handleSocketMessage(conn, data)
+	}
+}
+
+func (router *Router) handleSocketMessage(conn *websocket.Conn, data []byte) {
+	var envelope inboundSocketEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		router.writeSocketError(conn, "", "invalid_message", "message must be a valid JSON socket envelope")
+		return
+	}
+
+	switch strings.TrimSpace(envelope.Type) {
+	case "session.create":
+		router.handleSessionCreate(conn, envelope)
+	default:
+		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "unsupported socket message type")
+	}
+}
+
+func (router *Router) handleSessionCreate(conn *websocket.Conn, envelope inboundSocketEnvelope) {
+	var payload sessionCreatePayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.create payload is invalid JSON")
+		return
+	}
+
+	payload.Nickname = strings.TrimSpace(payload.Nickname)
+	payload.DeviceID = strings.TrimSpace(payload.DeviceID)
+	if payload.Nickname == "" || payload.DeviceID == "" {
+		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.create payload requires nickname and device_id")
+		return
+	}
+
+	session, ownerActorID, err := router.createOwnerSession(payload)
+	if err != nil {
+		router.logger.Error("failed to create board session", "error", err)
+		router.writeSocketError(conn, envelope.RequestID, "internal_error", "failed to create board session")
+		return
+	}
+
+	sentAt := time.Now().UTC()
+	response := outboundSocketEnvelope{
+		Type:      "session.created",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   ownerActorID,
+		SentAt:    sentAt.Format(time.RFC3339Nano),
+		Payload: sessionCreatedPayload{
+			JoinCode:         session.JoinCode,
+			Role:             "owner",
+			MaxParticipants:  session.MaxParticipants,
+			ExpiresInSeconds: router.cfg.CodeTTLSeconds(),
+		},
+	}
+
+	if err := conn.WriteJSON(response); err != nil {
+		router.logger.Warn("failed to write session.created message", "error", err)
+	}
+}
+
+func (router *Router) createOwnerSession(payload sessionCreatePayload) (roomstore.BoardSession, string, error) {
+	boardID, err := router.idGenerator("board")
+	if err != nil {
+		return roomstore.BoardSession{}, "", fmt.Errorf("generate board id: %w", err)
+	}
+
+	actorID, err := router.idGenerator("actor")
+	if err != nil {
+		return roomstore.BoardSession{}, "", fmt.Errorf("generate owner actor id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	session, err := router.store.CreateBoard(roomstore.CreateBoardParams{
+		BoardID: boardID,
+		Owner: roomstore.Participant{
+			ActorID:  actorID,
+			DeviceID: payload.DeviceID,
+			Nickname: payload.Nickname,
+			Role:     roomstore.RoleOwner,
+			Color:    defaultOwnerColor,
+		},
+	}, now)
+	if err != nil {
+		return roomstore.BoardSession{}, "", err
+	}
+
+	return session, actorID, nil
+}
+
+func (router *Router) writeSocketError(conn *websocket.Conn, requestID, code, message string) {
+	payload := outboundSocketEnvelope{
+		Type:      "error",
+		RequestID: requestID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: socketErrorPayload{
+			Code:    code,
+			Message: message,
+		},
+	}
+
+	if err := conn.WriteJSON(payload); err != nil {
+		router.logger.Warn("failed to write websocket error message", "error", err)
+	}
+}
+
+func normalizeRuntimeConfig(cfg config.Config) config.Config {
+	normalized := cfg
+	if normalized.MaxParticipantsPerBoard <= 0 {
+		normalized.MaxParticipantsPerBoard = defaultMaxParticipantsPerBoard
+	}
+
+	if normalized.JoinCodeLength <= 0 {
+		normalized.JoinCodeLength = defaultJoinCodeLength
+	}
+
+	if normalized.CodeTTL <= 0 {
+		normalized.CodeTTL = defaultCodeTTL
+	}
+
+	if normalized.HeartbeatInterval <= 0 {
+		normalized.HeartbeatInterval = defaultHeartbeatInterval
+	}
+
+	return normalized
+}
+
+func generatePrefixedID(prefix string) (string, error) {
+	entropy := make([]byte, 8)
+	if _, err := rand.Read(entropy); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(entropy)), nil
 }
 
 func (router *Router) logRequest(request *http.Request, recorder *responseRecorder, duration time.Duration) {
@@ -152,6 +333,33 @@ func (recorder *responseRecorder) WriteHeader(statusCode int) {
 	recorder.ResponseWriter.WriteHeader(statusCode)
 }
 
+func (recorder *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := recorder.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+
+	return hijacker.Hijack()
+}
+
+func (recorder *responseRecorder) Flush() {
+	flusher, ok := recorder.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	flusher.Flush()
+}
+
+func (recorder *responseRecorder) Push(target string, opts *http.PushOptions) error {
+	pusher, ok := recorder.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+
+	return pusher.Push(target, opts)
+}
+
 func (recorder *responseRecorder) statusCode() int {
 	return recorder.statusCodeValue
 }
@@ -164,3 +372,43 @@ func (recorder *responseRecorder) recordError(code, message string) {
 type errorRecorder interface {
 	recordError(code, message string)
 }
+
+type inboundSocketEnvelope struct {
+	Type      string          `json:"type"`
+	RequestID string          `json:"request_id,omitempty"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+type outboundSocketEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id,omitempty"`
+	BoardID   string `json:"board_id,omitempty"`
+	ActorID   string `json:"actor_id,omitempty"`
+	SentAt    string `json:"sent_at,omitempty"`
+	Payload   any    `json:"payload"`
+}
+
+type sessionCreatePayload struct {
+	Nickname string `json:"nickname"`
+	DeviceID string `json:"device_id"`
+}
+
+type sessionCreatedPayload struct {
+	JoinCode         string `json:"join_code"`
+	Role             string `json:"role"`
+	MaxParticipants  int    `json:"max_participants"`
+	ExpiresInSeconds int    `json:"expires_in_seconds"`
+}
+
+type socketErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+const (
+	defaultMaxParticipantsPerBoard = 4
+	defaultJoinCodeLength          = 8
+	defaultOwnerColor              = "#f97316"
+	defaultCodeTTL                 = 24 * time.Hour
+	defaultHeartbeatInterval       = 25 * time.Second
+)

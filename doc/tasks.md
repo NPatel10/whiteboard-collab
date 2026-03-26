@@ -22,7 +22,7 @@
 
 ## Phase 2: WebSocket Protocol
 
-- [ ] Implement `session.create`.
+- [x] Implement `session.create`.
 - [ ] Implement `session.join`.
 - [ ] Implement `session.join_rejected`.
 - [ ] Implement `session.created` and `session.joined`.

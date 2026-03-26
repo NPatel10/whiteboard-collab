@@ -90,35 +90,21 @@ func TestNewRouterConfig(t *testing.T) {
 	}
 }
 
-func TestNewRouterWebSocketScaffold(t *testing.T) {
+func TestNewRouterWebSocketRequiresUpgradeHeaders(t *testing.T) {
 	t.Parallel()
 
 	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
 
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusNotImplemented {
-		t.Fatalf("status code = %d, want %d", response.Code, http.StatusNotImplemented)
+	response, err := http.Get(server.URL + "/api/v1/ws")
+	if err != nil {
+		t.Fatalf("get websocket endpoint: %v", err)
 	}
+	defer response.Body.Close()
 
-	if contentType := response.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
-		t.Fatalf("content type = %q, want %q", contentType, "application/json; charset=utf-8")
-	}
-
-	var payload errorResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode ws scaffold response: %v", err)
-	}
-
-	if payload.Error.Code != "not_implemented" {
-		t.Fatalf("error code = %q, want %q", payload.Error.Code, "not_implemented")
-	}
-
-	if payload.Error.Message != "websocket relay endpoint is scaffolded but not implemented yet" {
-		t.Fatalf("error message = %q, want scaffold message", payload.Error.Message)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d", response.StatusCode, http.StatusBadRequest)
 	}
 }
 
