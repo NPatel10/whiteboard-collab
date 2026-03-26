@@ -41,7 +41,7 @@
 - [x] Create single-route SvelteKit app shell for landing and board states.
 - [x] Build landing state with `Create board` and `Join board` flows.
 - [x] Build join form with code and nickname inputs.
-- [ ] Add app-level connection state store.
+- [x] Add app-level connection state store.
 - [ ] Add socket client with reconnect logic.
 - [ ] Add session stores for actor id, board id, join code, role, and participants.
 - [ ] Add invalid-code, board-full, and reconnecting UI states.

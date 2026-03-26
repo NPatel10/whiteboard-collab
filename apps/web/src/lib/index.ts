@@ -1,2 +1,3 @@
 export * from './config/public.js';
+export * from './whiteboard/connection-state.svelte.js';
 export * from './whiteboard/types.js';

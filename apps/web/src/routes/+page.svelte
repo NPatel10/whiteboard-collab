@@ -5,13 +5,13 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Separator } from '$lib/components/ui/separator';
 	import {
+		appConnectionState,
 		publicRuntimeConfig,
 		type ParticipantRole,
 		type ParticipantSummary,
 		type WhiteboardTool
 	} from '$lib';
 
-	type OverlayState = 'invalid-code' | 'reconnecting' | null;
 	type ShellState = 'landing' | 'board';
 
 	type ToolbarOption = {
@@ -26,6 +26,7 @@
 	};
 
 	const defaultJoinCode = 'A7F3KQ9X';
+	const invalidJoinCodeError = 'Enter a valid 8-character board code.';
 	const boardParticipants: ParticipantSummary[] = [
 		{ actor_id: 'u_owner_1', nickname: 'Nayan', role: 'owner', color: '#f97316' },
 		{ actor_id: 'u_guest_2', nickname: 'Kai', role: 'guest', color: '#0ea5e9' }
@@ -56,7 +57,6 @@
 	let isJoinFormOpen = $state(false);
 	let activeTool = $state<WhiteboardTool>('pen');
 	let boardRole = $state<ParticipantRole>('owner');
-	let overlayState = $state<OverlayState>(null);
 	let shellState = $state<ShellState>('landing');
 
 	function createBoard() {
@@ -69,24 +69,24 @@
 	function openBoard(role: ParticipantRole) {
 		boardRole = role;
 		shellState = 'board';
-		overlayState = null;
+		appConnectionState.setConnected();
 		activeTool = role === 'owner' ? 'pen' : 'select';
 	}
 
 	function showReconnectOverlay() {
 		shellState = 'board';
-		overlayState = 'reconnecting';
+		appConnectionState.setReconnecting();
 	}
 
 	function toggleJoinForm() {
 		isJoinFormOpen = !isJoinFormOpen;
 		joinError = null;
-		overlayState = null;
+		appConnectionState.setDisconnected();
 	}
 
 	function resetToLanding() {
 		shellState = 'landing';
-		overlayState = null;
+		appConnectionState.setDisconnected();
 	}
 
 	function selectTool(toolId: WhiteboardTool) {
@@ -115,13 +115,11 @@
 
 		if (trimmedNickname.length < 2) {
 			joinError = 'Enter a nickname with at least 2 characters.';
-			overlayState = null;
 			return;
 		}
 
 		if (normalizedJoinCode.length !== 8) {
-			joinError = 'Enter a valid 8-character board code.';
-			overlayState = 'invalid-code';
+			joinError = invalidJoinCodeError;
 			return;
 		}
 
@@ -230,7 +228,7 @@
 										placeholder="A7F3KQ9X"
 										value={joinCode}
 										maxlength={8}
-										aria-invalid={overlayState === 'invalid-code'}
+										aria-invalid={!!joinError}
 										oninput={handleJoinCodeInput}
 									/>
 								</div>
@@ -286,7 +284,7 @@
 						{#if joinError}
 							<div class="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-rose-900">
 								<p class="text-sm font-semibold uppercase tracking-[0.24em] text-rose-700">
-									{overlayState === 'invalid-code' ? 'Invalid Code' : 'Validation Error'}
+									{joinError === invalidJoinCodeError ? 'Invalid Code' : 'Validation Error'}
 								</p>
 								<p class="mt-3 text-base font-medium">{joinError}</p>
 								<p class="mt-2 text-sm leading-6 text-rose-700">
@@ -306,7 +304,7 @@
 								{boardRole === 'owner' ? 'Owner board' : 'Guest board'}
 							</Badge>
 							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">
-								{overlayState === 'reconnecting' ? 'Reconnecting' : 'Live canvas'}
+								{appConnectionState.statusLabel}
 							</Badge>
 						</div>
 						<h2 class="text-xl font-semibold tracking-tight text-zinc-950">
@@ -377,7 +375,7 @@
 									<div class="rounded-3xl border border-zinc-950/10 bg-white/85 px-4 py-3 shadow-sm">
 										<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Connection</p>
 										<p class="mt-2 text-base font-semibold text-zinc-950">
-											{overlayState === 'reconnecting' ? 'Waiting for relay' : 'Stable'}
+											{appConnectionState.isReconnecting ? 'Waiting for relay' : 'Stable'}
 										</p>
 									</div>
 								</div>
@@ -402,7 +400,7 @@
 								</div>
 							</div>
 
-							{#if overlayState === 'reconnecting'}
+							{#if appConnectionState.isReconnecting}
 								<div class="absolute inset-0 z-10 flex items-center justify-center bg-zinc-950/35 p-6 backdrop-blur-sm">
 									<div class="w-full max-w-md rounded-[1.75rem] border border-white/20 bg-zinc-950/90 p-6 text-white shadow-2xl">
 										<p class="text-xs font-semibold uppercase tracking-[0.24em] text-amber-300">Reconnecting</p>
