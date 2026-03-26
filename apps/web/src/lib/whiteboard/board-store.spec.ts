@@ -161,6 +161,58 @@ describe('LocalBoardStore', () => {
 		});
 	});
 
+	it('persists creator snapshots without exposing live store state', () => {
+		const store = new LocalBoardStore();
+		store.replaceSnapshot(createSnapshot());
+
+		const written: Array<{ key: string; value: string }> = [];
+		const didPersist = store.persistCreatorSnapshot('board_1', {
+			isBrowser: true,
+			storage: {
+				setItem(key, value) {
+					written.push({ key, value });
+				}
+			}
+		});
+
+		expect(didPersist).toBe(true);
+		expect(written).toEqual([
+			{
+				key: 'whiteboard:creator-snapshot:board_1',
+				value: JSON.stringify({
+					snapshotVersion: 7,
+					actionCursor: 42,
+					boardState: {
+						elements: [
+							{
+								id: 'stroke_1',
+								kind: 'stroke',
+								created_by: 'actor_1',
+								created_at: '2026-03-26T10:30:00.000Z',
+								updated_at: '2026-03-26T10:30:00.000Z',
+								stroke: '#0f172a',
+								stroke_width: 4,
+								points: [
+									{ x: 12, y: 18, pressure: 0.4 },
+									{ x: 24, y: 30, pressure: 0.8 }
+								]
+							}
+						],
+						viewport: {
+							x: 8,
+							y: 16,
+							zoom: 1.5
+						}
+					}
+				})
+			}
+		]);
+
+		store.boardState.viewport.x = 999;
+
+		expect(written[0].value).toContain('"x":8');
+	});
+
 	it('clears board state and log entries', () => {
 		const store = new LocalBoardStore();
 		store.replaceSnapshot(createSnapshot());
