@@ -213,6 +213,40 @@ describe('LocalBoardStore', () => {
 		expect(written[0].value).toContain('"x":8');
 	});
 
+	it('persists creator action logs without exposing live store state', () => {
+		const store = new LocalBoardStore();
+		const action = createAction();
+
+		store.appendAction(action, '2026-03-26T10:31:00.000Z');
+
+		const written: Array<{ key: string; value: string }> = [];
+		const didPersist = store.persistCreatorActionLog('board_1', {
+			isBrowser: true,
+			storage: {
+				setItem(key, value) {
+					written.push({ key, value });
+				}
+			}
+		});
+
+		expect(didPersist).toBe(true);
+		expect(written).toEqual([
+			{
+				key: 'whiteboard:creator-action-log:board_1',
+				value: JSON.stringify([
+					{
+						action,
+						receivedAt: '2026-03-26T10:31:00.000Z'
+					}
+				])
+			}
+		]);
+
+		action.data.x = 999;
+
+		expect(written[0].value).toContain('"x":100');
+	});
+
 	it('clears board state and log entries', () => {
 		const store = new LocalBoardStore();
 		store.replaceSnapshot(createSnapshot());

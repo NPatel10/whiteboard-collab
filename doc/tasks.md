@@ -84,7 +84,7 @@
 ## Phase 7: Persistence
 
 - [x] Persist creator board snapshot to local storage.
-- [ ] Persist creator action log to local storage.
+- [x] Persist creator action log to local storage.
 - [ ] Restore creator board from local storage on reload.
 - [ ] Ensure guests do not auto-persist board state.
 - [ ] Handle missing or cleared local storage by creating a fresh board.

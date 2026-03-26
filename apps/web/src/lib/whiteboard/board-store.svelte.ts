@@ -6,7 +6,12 @@ import type {
 	ISODateTimeString
 } from './types.js';
 import { importBoardSnapshotFromJson } from './board-json.js';
-import { persistCreatorBoardSnapshot, type PersistCreatorBoardSnapshotOptions } from './board-persistence.svelte.js';
+import {
+	persistCreatorBoardActionLog,
+	persistCreatorBoardSnapshot,
+	type PersistCreatorBoardActionLogOptions,
+	type PersistCreatorBoardSnapshotOptions
+} from './board-persistence.svelte.js';
 
 export interface LocalBoardSnapshot {
 	snapshotVersion: number;
@@ -116,6 +121,13 @@ export class LocalBoardStore {
 		options: PersistCreatorBoardSnapshotOptions = {}
 	) {
 		return persistCreatorBoardSnapshot(boardId, this.getSnapshot(), options);
+	}
+
+	persistCreatorActionLog(
+		boardId: string,
+		options: PersistCreatorBoardActionLogOptions = {}
+	) {
+		return persistCreatorBoardActionLog(boardId, this.actionLog, options);
 	}
 
 	appendAction<TKind extends BoardActionKind>(
