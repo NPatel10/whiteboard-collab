@@ -105,7 +105,7 @@
 - [ ] Add unit tests for board reducers and action application.
 - [ ] Add integration tests for create, join, snapshot sync, and reconnect flows.
 - [ ] Add integration tests for invalid code, full board, kicked participant, and revoked code cases.
-- [ ] Add frontend smoke tests for landing, owner board, and guest board states.
+- [x] Add frontend smoke tests for landing, owner board, and guest board states.
 
 ## Phase 10: Demo Readiness
 
