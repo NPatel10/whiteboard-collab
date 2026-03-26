@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 
 import type { BoardActionLogEntry } from './board-store.svelte.js';
 import type { LocalBoardSnapshot } from './board-store.svelte.js';
-import type { BoardActionPayload, Viewport } from './types.js';
+import type { BoardActionPayload, ParticipantRole, Viewport } from './types.js';
 
 const creatorSnapshotStoragePrefix = 'whiteboard:creator-snapshot';
 const creatorActionLogStoragePrefix = 'whiteboard:creator-action-log';
@@ -15,11 +15,13 @@ export interface CreatorBoardStorage {
 export interface PersistCreatorBoardSnapshotOptions {
 	isBrowser?: boolean;
 	storage?: CreatorBoardStorage;
+	role?: ParticipantRole | null;
 }
 
 export interface PersistCreatorBoardActionLogOptions {
 	isBrowser?: boolean;
 	storage?: CreatorBoardStorage;
+	role?: ParticipantRole | null;
 }
 
 export interface RestoreCreatorBoardSnapshotOptions {
@@ -44,6 +46,10 @@ export class CreatorBoardStorageError extends Error {
 	}
 }
 
+export function canPersistCreatorBoardState(role: ParticipantRole | null | undefined) {
+	return role === 'owner';
+}
+
 export function getCreatorBoardSnapshotStorageKey(boardId: string) {
 	const normalizedBoardId = boardId.trim();
 	if (normalizedBoardId === '') {
@@ -58,7 +64,7 @@ export function persistCreatorBoardSnapshot(
 	snapshot: LocalBoardSnapshot,
 	options: PersistCreatorBoardSnapshotOptions = {}
 ) {
-	const canUseStorage = options.isBrowser ?? browser;
+	const canUseStorage = (options.isBrowser ?? browser) && canPersistCreatorBoardState(options.role);
 	if (!canUseStorage) {
 		return false;
 	}
@@ -83,7 +89,7 @@ export function persistCreatorBoardActionLog(
 	actionLog: BoardActionLogEntry[],
 	options: PersistCreatorBoardActionLogOptions = {}
 ) {
-	const canUseStorage = options.isBrowser ?? browser;
+	const canUseStorage = (options.isBrowser ?? browser) && canPersistCreatorBoardState(options.role);
 	if (!canUseStorage) {
 		return false;
 	}

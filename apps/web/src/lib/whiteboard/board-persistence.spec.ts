@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	canPersistCreatorBoardState,
 	getCreatorBoardActionLogStorageKey,
 	getCreatorBoardSnapshotStorageKey,
 	persistCreatorBoardActionLog,
@@ -79,6 +80,12 @@ function createStorage(initialValues: Record<string, string> = {}) {
 }
 
 describe('creator board snapshot persistence', () => {
+	it('only allows creator sessions to persist board state', () => {
+		expect(canPersistCreatorBoardState('owner')).toBe(true);
+		expect(canPersistCreatorBoardState('guest')).toBe(false);
+		expect(canPersistCreatorBoardState(null)).toBe(false);
+	});
+
 	it('builds a stable storage key from the board id', () => {
 		expect(getCreatorBoardSnapshotStorageKey(' board_1 ')).toBe('whiteboard:creator-snapshot:board_1');
 	});
@@ -88,6 +95,7 @@ describe('creator board snapshot persistence', () => {
 		const snapshot = createSnapshot();
 
 		const didPersist = persistCreatorBoardSnapshot('board_1', snapshot, {
+			role: 'owner',
 			isBrowser: true,
 			storage: {
 				getItem() {
@@ -112,7 +120,28 @@ describe('creator board snapshot persistence', () => {
 		const written: Array<{ key: string; value: string }> = [];
 
 		const didPersist = persistCreatorBoardSnapshot('board_1', createSnapshot(), {
+			role: 'owner',
 			isBrowser: false,
+			storage: {
+				getItem() {
+					return null;
+				},
+				setItem(key, value) {
+					written.push({ key, value });
+				}
+			}
+		});
+
+		expect(didPersist).toBe(false);
+		expect(written).toEqual([]);
+	});
+
+	it('skips local storage for guest creator snapshots', () => {
+		const written: Array<{ key: string; value: string }> = [];
+
+		const didPersist = persistCreatorBoardSnapshot('board_1', createSnapshot(), {
+			role: 'guest',
+			isBrowser: true,
 			storage: {
 				getItem() {
 					return null;
@@ -140,6 +169,7 @@ describe('creator board action log persistence', () => {
 		const actionLog = createActionLog();
 
 		const didPersist = persistCreatorBoardActionLog('board_1', actionLog, {
+			role: 'owner',
 			isBrowser: true,
 			storage: {
 				getItem() {
@@ -164,7 +194,28 @@ describe('creator board action log persistence', () => {
 		const written: Array<{ key: string; value: string }> = [];
 
 		const didPersist = persistCreatorBoardActionLog('board_1', createActionLog(), {
+			role: 'owner',
 			isBrowser: false,
+			storage: {
+				getItem() {
+					return null;
+				},
+				setItem(key, value) {
+					written.push({ key, value });
+				}
+			}
+		});
+
+		expect(didPersist).toBe(false);
+		expect(written).toEqual([]);
+	});
+
+	it('skips local storage for guest creator action logs', () => {
+		const written: Array<{ key: string; value: string }> = [];
+
+		const didPersist = persistCreatorBoardActionLog('board_1', createActionLog(), {
+			role: 'guest',
+			isBrowser: true,
 			storage: {
 				getItem() {
 					return null;

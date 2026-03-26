@@ -180,6 +180,7 @@ describe('LocalBoardStore', () => {
 
 		const written: Array<{ key: string; value: string }> = [];
 		const didPersist = store.persistCreatorSnapshot('board_1', {
+			role: 'owner',
 			isBrowser: true,
 			storage: {
 				getItem() {
@@ -237,6 +238,7 @@ describe('LocalBoardStore', () => {
 
 		const written: Array<{ key: string; value: string }> = [];
 		const didPersist = store.persistCreatorActionLog('board_1', {
+			role: 'owner',
 			isBrowser: true,
 			storage: {
 				getItem() {
@@ -264,6 +266,29 @@ describe('LocalBoardStore', () => {
 		action.data.x = 999;
 
 		expect(written[0].value).toContain('"x":100');
+	});
+
+	it('skips creator board persistence for guest sessions', () => {
+		const store = new LocalBoardStore();
+		store.replaceSnapshot(createSnapshot());
+		store.appendAction(createAction(), '2026-03-26T10:31:00.000Z');
+
+		const written: Array<{ key: string; value: string }> = [];
+		const didPersist = store.persistCreatorBoardState('board_1', {
+			role: 'guest',
+			isBrowser: true,
+			storage: {
+				getItem() {
+					return null;
+				},
+				setItem(key, value) {
+					written.push({ key, value });
+				}
+			}
+		});
+
+		expect(didPersist).toBe(false);
+		expect(written).toEqual([]);
 	});
 
 	it('restores creator board state from storage', () => {

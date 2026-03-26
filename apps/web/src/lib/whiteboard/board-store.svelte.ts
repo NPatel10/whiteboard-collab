@@ -131,6 +131,15 @@ export class LocalBoardStore {
 		return persistCreatorBoardActionLog(boardId, this.actionLog, options);
 	}
 
+	persistCreatorBoardState(
+		boardId: string,
+		options: PersistCreatorBoardSnapshotOptions & PersistCreatorBoardActionLogOptions = {}
+	) {
+		const didPersistSnapshot = this.persistCreatorSnapshot(boardId, options);
+		const didPersistActionLog = this.persistCreatorActionLog(boardId, options);
+		return didPersistSnapshot || didPersistActionLog;
+	}
+
 	restoreCreatorBoard(
 		boardId: string,
 		options: PersistCreatorBoardSnapshotOptions & PersistCreatorBoardActionLogOptions = {}
