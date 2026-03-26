@@ -86,3 +86,31 @@ func TestNewRouterConfig(t *testing.T) {
 		t.Fatalf("heartbeat interval seconds = %d, want %d", payload.HeartbeatIntervalSecs, 25)
 	}
 }
+
+func TestNewRouterWebSocketScaffold(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusNotImplemented)
+	}
+
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
+		t.Fatalf("content type = %q, want %q", contentType, "application/json; charset=utf-8")
+	}
+
+	var payload errorResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode ws scaffold response: %v", err)
+	}
+
+	if payload.Error != "websocket relay endpoint is scaffolded but not implemented yet" {
+		t.Fatalf("error = %q, want scaffold message", payload.Error)
+	}
+}
