@@ -48,7 +48,7 @@
 
 ## Phase 4: Whiteboard Core
 
-- [ ] Define board element model for strokes, shapes, text, and sticky notes.
+- [x] Define board element model for strokes, shapes, text, and sticky notes.
 - [ ] Define viewport model for pan and zoom.
 - [ ] Implement local board store with snapshot and action log.
 - [ ] Implement action ids and per-client sequence numbers.
