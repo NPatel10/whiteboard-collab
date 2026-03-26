@@ -5,8 +5,13 @@ import type {
 	BoardSnapshotPayload,
 	BoardState,
 	ISODateTimeString,
+	ActorId,
 	ObjectId,
 	SelectionUpdateActionData,
+	StrokeAppendActionData,
+	StrokeBeginActionData,
+	StrokeEndActionData,
+	StrokePoint,
 	TransformUpdateActionData
 } from './types.js';
 import { importBoardSnapshotFromJson } from './board-json.js';
@@ -103,6 +108,22 @@ function normalizeActionEntry<TKind extends BoardActionKind>(
 	};
 }
 
+function normalizeStrokePoint(point: StrokePoint): StrokePoint | null {
+	if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+		return null;
+	}
+
+	if (point.pressure !== undefined && !Number.isFinite(point.pressure)) {
+		return null;
+	}
+
+	return {
+		x: point.x,
+		y: point.y,
+		pressure: point.pressure
+	};
+}
+
 function normalizeObjectIds(objectIds: readonly ObjectId[], elements: BoardElement[]) {
 	const existingObjectIds = new Set(elements.map((element) => element.id));
 	const seenObjectIds = new Set<string>();
@@ -170,6 +191,7 @@ export class LocalBoardStore {
 	boardState = $state<BoardState>(createEmptyBoardState());
 	actionLog = $state<BoardActionLogEntry[]>([]);
 	selectedObjectIds = $state<ObjectId[]>(createEmptySelection());
+	#activeStrokeId: ObjectId | null = null;
 	#undoStack: BoardEditorState[] = [];
 	#redoStack: BoardEditorState[] = [];
 
@@ -216,6 +238,7 @@ export class LocalBoardStore {
 		this.boardState = normalized.boardState;
 		this.actionLog = [];
 		this.selectedObjectIds = createEmptySelection();
+		this.#activeStrokeId = null;
 		this.#clearHistory();
 	}
 
@@ -240,6 +263,105 @@ export class LocalBoardStore {
 
 	clearSelection() {
 		this.selectedObjectIds = createEmptySelection();
+	}
+
+	beginStroke(
+		payload: StrokeBeginActionData,
+		createdBy: ActorId,
+		receivedAt: Date | ISODateTimeString = new Date()
+	) {
+		const objectId = payload.object_id.trim();
+		const createdById = createdBy.trim();
+		const normalizedPoint = normalizeStrokePoint(payload.point);
+		if (
+			objectId === '' ||
+			createdById === '' ||
+			normalizedPoint === null ||
+			this.#activeStrokeId !== null
+		) {
+			return false;
+		}
+
+		this.#pushUndoCheckpoint();
+		this.boardState = {
+			...this.boardState,
+			elements: [
+				...this.boardState.elements,
+				{
+					id: objectId,
+					kind: 'stroke',
+					created_by: createdById,
+					created_at: toIsoString(receivedAt),
+					updated_at: toIsoString(receivedAt),
+					stroke: payload.stroke,
+					stroke_width: payload.stroke_width,
+					points: [normalizedPoint]
+				}
+			]
+		};
+		this.#activeStrokeId = objectId;
+		this.#clearRedoStack();
+		return true;
+	}
+
+	appendStrokePoints(payload: StrokeAppendActionData, receivedAt: Date | ISODateTimeString = new Date()) {
+		const objectId = payload.object_id.trim();
+		const normalizedPoints = payload.points
+			.map((point) => normalizeStrokePoint(point))
+			.filter((point): point is StrokePoint => point !== null);
+
+		if (objectId === '' || normalizedPoints.length === 0 || this.#activeStrokeId !== objectId) {
+			return false;
+		}
+
+		const updatedAt = toIsoString(receivedAt);
+		let appended = false;
+		const nextElements = this.boardState.elements.map((element) => {
+			if (element.id !== objectId || element.kind !== 'stroke') {
+				return element;
+			}
+
+			appended = true;
+			return {
+				...element,
+				points: [...element.points, ...normalizedPoints],
+				updated_at: updatedAt
+			};
+		});
+
+		if (!appended) {
+			return false;
+		}
+
+		this.boardState = {
+			...this.boardState,
+			elements: nextElements
+		};
+		return true;
+	}
+
+	endStroke(payload: StrokeEndActionData, receivedAt: Date | ISODateTimeString = new Date()) {
+		const objectId = payload.object_id.trim();
+		if (objectId === '' || this.#activeStrokeId !== objectId) {
+			return false;
+		}
+
+		const updatedAt = toIsoString(receivedAt);
+		this.boardState = {
+			...this.boardState,
+			elements: this.boardState.elements.map((element) => {
+				if (element.id !== objectId || element.kind !== 'stroke') {
+					return element;
+				}
+
+				return {
+					...element,
+					updated_at: updatedAt
+				};
+			})
+		};
+		this.#activeStrokeId = null;
+		return true;
 	}
 
 	undo() {
@@ -395,6 +517,7 @@ export class LocalBoardStore {
 		}
 
 		this.actionLog = [...this.actionLog, normalizeActionEntry(entry)];
+		this.actionCursor += 1;
 		return true;
 	}
 
@@ -404,6 +527,7 @@ export class LocalBoardStore {
 		this.boardState = createEmptyBoardState();
 		this.actionLog = [];
 		this.selectedObjectIds = createEmptySelection();
+		this.#activeStrokeId = null;
 		this.#clearHistory();
 	}
 

@@ -52,7 +52,7 @@
 - [x] Define viewport model for pan and zoom.
 - [x] Implement local board store with snapshot and action log.
 - [x] Implement action ids and per-client sequence numbers.
-- [ ] Implement draw pipeline with throttled or batched actions.
+- [x] Implement draw pipeline with throttled or batched actions.
 - [x] Implement selection and transform behavior.
 - [x] Implement delete behavior.
 - [x] Implement per-user undo and redo stacks.
