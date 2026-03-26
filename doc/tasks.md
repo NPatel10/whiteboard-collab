@@ -2,7 +2,7 @@
 
 ## Phase 0: Project Setup
 
-- [ ] Finalize canvas library choice for SvelteKit.
+- [x] Finalize canvas library choice for SvelteKit.
 - [x] Add `shadcn-svelte` to the frontend stack and configure required UI primitives.
 - [x] Set up shared TypeScript types for board models, WebSocket messages, and action payloads.
 - [x] Define environment variables for frontend and relay server.
