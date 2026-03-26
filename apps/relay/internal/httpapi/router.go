@@ -50,6 +50,7 @@ type Router struct {
 	idGenerator        func(prefix string) (string, error)
 	connectionMu       sync.RWMutex
 	connectionsByBoard map[string]map[string]*websocketClient
+	boardOwnerByBoard  map[string]string
 	sessionByConn      map[*websocket.Conn]participantSession
 }
 
@@ -80,6 +81,7 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 		},
 		idGenerator:        generatePrefixedID,
 		connectionsByBoard: make(map[string]map[string]*websocketClient),
+		boardOwnerByBoard:  make(map[string]string),
 		sessionByConn:      make(map[*websocket.Conn]participantSession),
 	}
 }
@@ -159,6 +161,10 @@ func (router *Router) handleSocketMessage(client *websocketClient, data []byte) 
 		router.handleSessionCreate(client, envelope)
 	case "session.join":
 		router.handleSessionJoin(client, envelope)
+	case "board.snapshot":
+		router.handleBoardSnapshot(client, envelope)
+	case "board.snapshot.ack":
+		router.handleBoardSnapshotAck(client, envelope)
 	default:
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "unsupported socket message type")
 	}
@@ -195,6 +201,7 @@ func (router *Router) handleSessionCreate(client *websocketClient, envelope inbo
 		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to register owner session")
 		return
 	}
+	router.setBoardOwner(session.BoardID, ownerActorID)
 
 	sentAt := time.Now().UTC()
 	response := outboundSocketEnvelope{
@@ -259,6 +266,7 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to register guest session")
 		return
 	}
+	router.setBoardOwner(session.BoardID, session.OwnerActorID)
 
 	response := outboundSocketEnvelope{
 		Type:      "session.joined",
@@ -284,6 +292,7 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 	}
 
 	router.broadcastParticipantJoined(session.BoardID, actorID, joinedParticipant)
+	router.sendBoardSnapshotRequest(session.BoardID, session.OwnerActorID, actorID, envelope.RequestID)
 }
 
 func (router *Router) hasActiveSession(client *websocketClient) bool {
@@ -315,6 +324,42 @@ func (router *Router) registerConnection(client *websocketClient, boardID, actor
 	}
 
 	return nil
+}
+
+func (router *Router) setBoardOwner(boardID, ownerActorID string) {
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	router.boardOwnerByBoard[boardID] = ownerActorID
+}
+
+func (router *Router) boardOwner(boardID string) (string, bool) {
+	router.connectionMu.RLock()
+	defer router.connectionMu.RUnlock()
+
+	ownerActorID, exists := router.boardOwnerByBoard[boardID]
+	return ownerActorID, exists
+}
+
+func (router *Router) sessionForClient(client *websocketClient) (participantSession, bool) {
+	router.connectionMu.RLock()
+	defer router.connectionMu.RUnlock()
+
+	session, exists := router.sessionByConn[client.conn]
+	return session, exists
+}
+
+func (router *Router) connectionForActor(boardID, actorID string) (*websocketClient, bool) {
+	router.connectionMu.RLock()
+	defer router.connectionMu.RUnlock()
+
+	connectionsByActor, exists := router.connectionsByBoard[boardID]
+	if !exists {
+		return nil, false
+	}
+
+	client, exists := connectionsByActor[actorID]
+	return client, exists
 }
 
 func (router *Router) handleSocketDisconnect(client *websocketClient) {
@@ -350,9 +395,131 @@ func (router *Router) unregisterConnection(client *websocketClient) (participant
 	delete(connectionsByActor, session.ActorID)
 	if len(connectionsByActor) == 0 {
 		delete(router.connectionsByBoard, session.BoardID)
+		delete(router.boardOwnerByBoard, session.BoardID)
 	}
 
 	return session, true
+}
+
+func (router *Router) sendBoardSnapshotRequest(boardID, ownerActorID, targetActorID, requestID string) {
+	ownerClient, exists := router.connectionForActor(boardID, ownerActorID)
+	if !exists {
+		return
+	}
+
+	payload := outboundSocketEnvelope{
+		Type:      "board.snapshot.request",
+		RequestID: requestID,
+		BoardID:   boardID,
+		ActorID:   targetActorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: boardSnapshotRequestPayload{
+			TargetActorID: targetActorID,
+		},
+	}
+
+	if err := ownerClient.WriteJSON(payload); err != nil {
+		router.logger.Warn(
+			"failed to send board.snapshot.request",
+			"board_id",
+			boardID,
+			"target_actor_id",
+			targetActorID,
+			"error",
+			err,
+		)
+	}
+}
+
+func (router *Router) handleBoardSnapshot(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	var payload boardSnapshotPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.snapshot payload is invalid JSON")
+		return
+	}
+
+	payload.TargetActorID = strings.TrimSpace(payload.TargetActorID)
+	if payload.TargetActorID == "" {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.snapshot payload requires target_actor_id")
+		return
+	}
+
+	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
+	if !ownerExists || ownerActorID != session.ActorID {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "only the board owner can send board.snapshot")
+		return
+	}
+
+	targetClient, targetExists := router.connectionForActor(session.BoardID, payload.TargetActorID)
+	if !targetExists {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "snapshot target is not connected")
+		return
+	}
+
+	forwarded := outboundSocketEnvelope{
+		Type:      "board.snapshot",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   session.ActorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+	}
+
+	if err := targetClient.WriteJSON(forwarded); err != nil {
+		router.logger.Warn("failed to forward board.snapshot", "board_id", session.BoardID, "target_actor_id", payload.TargetActorID, "error", err)
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to forward board.snapshot")
+	}
+}
+
+func (router *Router) handleBoardSnapshotAck(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	var payload boardSnapshotAckPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.snapshot.ack payload is invalid JSON")
+		return
+	}
+
+	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
+	if !ownerExists {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board owner is not available")
+		return
+	}
+
+	if session.ActorID == ownerActorID {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "owner cannot send board.snapshot.ack")
+		return
+	}
+
+	ownerClient, ownerConnected := router.connectionForActor(session.BoardID, ownerActorID)
+	if !ownerConnected {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board owner is not connected")
+		return
+	}
+
+	forwarded := outboundSocketEnvelope{
+		Type:      "board.snapshot.ack",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   session.ActorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+	}
+
+	if err := ownerClient.WriteJSON(forwarded); err != nil {
+		router.logger.Warn("failed to forward board.snapshot.ack", "board_id", session.BoardID, "owner_actor_id", ownerActorID, "error", err)
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to forward board.snapshot.ack")
+	}
 }
 
 func (router *Router) broadcastParticipantJoined(boardID, actorID string, participant participantSummaryPayload) {
@@ -705,6 +872,21 @@ type participantSummaryPayload struct {
 	Nickname string `json:"nickname"`
 	Role     string `json:"role"`
 	Color    string `json:"color"`
+}
+
+type boardSnapshotRequestPayload struct {
+	TargetActorID string `json:"target_actor_id"`
+}
+
+type boardSnapshotPayload struct {
+	TargetActorID   string          `json:"target_actor_id"`
+	SnapshotVersion int             `json:"snapshot_version"`
+	BoardState      json.RawMessage `json:"board_state"`
+	ActionCursor    int             `json:"action_cursor"`
+}
+
+type boardSnapshotAckPayload struct {
+	SnapshotVersion int `json:"snapshot_version"`
 }
 
 type participantLeftPayload struct {

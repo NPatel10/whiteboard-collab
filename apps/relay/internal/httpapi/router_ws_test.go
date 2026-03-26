@@ -47,6 +47,21 @@ type wsSessionJoinRejectedPayload struct {
 	Reason string `json:"reason"`
 }
 
+type wsBoardSnapshotRequestPayload struct {
+	TargetActorID string `json:"target_actor_id"`
+}
+
+type wsBoardSnapshotPayload struct {
+	TargetActorID   string          `json:"target_actor_id"`
+	SnapshotVersion int             `json:"snapshot_version"`
+	BoardState      json.RawMessage `json:"board_state"`
+	ActionCursor    int             `json:"action_cursor"`
+}
+
+type wsBoardSnapshotAckPayload struct {
+	SnapshotVersion int `json:"snapshot_version"`
+}
+
 type wsParticipantLeftPayload struct {
 	ActorID string `json:"actor_id"`
 	Reason  string `json:"reason"`
@@ -414,6 +429,314 @@ func TestWebSocketParticipantJoinedNotifiesExistingParticipants(t *testing.T) {
 	}
 }
 
+func TestWebSocketSnapshotRequestIsSentToOwnerAfterGuestJoin(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_snapshot_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_snapshot",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	const joinRequestID = "req_join_snapshot_request"
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": joinRequestID,
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Snapshot",
+			"device_id": "device_guest_snapshot",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+	snapshotRequestEnvelope := readWebSocketMessageByType(t, ownerConn, "board.snapshot.request", 2*time.Second)
+
+	if snapshotRequestEnvelope.RequestID != joinRequestID {
+		t.Fatalf("snapshot request request id = %q, want %q", snapshotRequestEnvelope.RequestID, joinRequestID)
+	}
+
+	if snapshotRequestEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("snapshot request board id = %q, want %q", snapshotRequestEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if snapshotRequestEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("snapshot request actor id = %q, want %q", snapshotRequestEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if snapshotRequestEnvelope.SentAt == "" {
+		t.Fatal("snapshot request sent_at is empty, want non-empty")
+	}
+
+	var snapshotRequestPayload wsBoardSnapshotRequestPayload
+	if err := json.Unmarshal(snapshotRequestEnvelope.Payload, &snapshotRequestPayload); err != nil {
+		t.Fatalf("decode board.snapshot.request payload: %v", err)
+	}
+
+	if snapshotRequestPayload.TargetActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf(
+			"snapshot request target_actor_id = %q, want %q",
+			snapshotRequestPayload.TargetActorID,
+			guestJoinedEnvelope.ActorID,
+		)
+	}
+}
+
+func TestWebSocketBoardSnapshotRoutesFromOwnerToTargetGuest(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_snapshot_route",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_snapshot_route",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_snapshot_route",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Route",
+			"device_id": "device_guest_snapshot_route",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+
+	const snapshotRequestID = "req_snapshot_route_1"
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "board.snapshot",
+		"request_id": snapshotRequestID,
+		"payload": map[string]any{
+			"target_actor_id":  guestJoinedEnvelope.ActorID,
+			"snapshot_version": 7,
+			"board_state": map[string]any{
+				"elements": []any{},
+				"viewport": map[string]any{
+					"x":    0,
+					"y":    0,
+					"zoom": 1,
+				},
+			},
+			"action_cursor": 19,
+		},
+	}); err != nil {
+		t.Fatalf("write board.snapshot: %v", err)
+	}
+
+	guestSnapshotEnvelope := readWebSocketMessageByType(t, guestConn, "board.snapshot", 2*time.Second)
+	if guestSnapshotEnvelope.RequestID != snapshotRequestID {
+		t.Fatalf("board.snapshot request id = %q, want %q", guestSnapshotEnvelope.RequestID, snapshotRequestID)
+	}
+
+	if guestSnapshotEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("board.snapshot board id = %q, want %q", guestSnapshotEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if guestSnapshotEnvelope.ActorID != ownerCreatedEnvelope.ActorID {
+		t.Fatalf("board.snapshot actor id = %q, want %q", guestSnapshotEnvelope.ActorID, ownerCreatedEnvelope.ActorID)
+	}
+
+	if guestSnapshotEnvelope.SentAt == "" {
+		t.Fatal("board.snapshot sent_at is empty, want non-empty")
+	}
+
+	var snapshotPayload wsBoardSnapshotPayload
+	if err := json.Unmarshal(guestSnapshotEnvelope.Payload, &snapshotPayload); err != nil {
+		t.Fatalf("decode board.snapshot payload: %v", err)
+	}
+
+	if snapshotPayload.TargetActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("target_actor_id = %q, want %q", snapshotPayload.TargetActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if snapshotPayload.SnapshotVersion != 7 {
+		t.Fatalf("snapshot_version = %d, want %d", snapshotPayload.SnapshotVersion, 7)
+	}
+
+	if snapshotPayload.ActionCursor != 19 {
+		t.Fatalf("action_cursor = %d, want %d", snapshotPayload.ActionCursor, 19)
+	}
+
+	var boardState map[string]any
+	if err := json.Unmarshal(snapshotPayload.BoardState, &boardState); err != nil {
+		t.Fatalf("decode board_state payload: %v", err)
+	}
+
+	if _, exists := boardState["elements"]; !exists {
+		t.Fatal("board_state missing elements")
+	}
+
+	if _, exists := boardState["viewport"]; !exists {
+		t.Fatal("board_state missing viewport")
+	}
+}
+
+func TestWebSocketBoardSnapshotAckRoutesFromGuestToOwner(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_snapshot_ack_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_snapshot_ack",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_snapshot_ack_guest",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Ack",
+			"device_id": "device_guest_snapshot_ack",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "board.snapshot",
+		"request_id": "req_snapshot_for_ack",
+		"payload": map[string]any{
+			"target_actor_id":  guestJoinedEnvelope.ActorID,
+			"snapshot_version": 11,
+			"board_state": map[string]any{
+				"elements": []any{},
+				"viewport": map[string]any{
+					"x":    10,
+					"y":    20,
+					"zoom": 1.2,
+				},
+			},
+			"action_cursor": 32,
+		},
+	}); err != nil {
+		t.Fatalf("write board.snapshot for ack flow: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, guestConn, "board.snapshot", 2*time.Second)
+
+	const ackRequestID = "req_snapshot_ack_1"
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "board.snapshot.ack",
+		"request_id": ackRequestID,
+		"payload": map[string]any{
+			"snapshot_version": 11,
+		},
+	}); err != nil {
+		t.Fatalf("write board.snapshot.ack: %v", err)
+	}
+
+	ownerAckEnvelope := readWebSocketMessageByType(t, ownerConn, "board.snapshot.ack", 2*time.Second)
+	if ownerAckEnvelope.RequestID != ackRequestID {
+		t.Fatalf("board.snapshot.ack request id = %q, want %q", ownerAckEnvelope.RequestID, ackRequestID)
+	}
+
+	if ownerAckEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("board.snapshot.ack board id = %q, want %q", ownerAckEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if ownerAckEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("board.snapshot.ack actor id = %q, want %q", ownerAckEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if ownerAckEnvelope.SentAt == "" {
+		t.Fatal("board.snapshot.ack sent_at is empty, want non-empty")
+	}
+
+	var ackPayload wsBoardSnapshotAckPayload
+	if err := json.Unmarshal(ownerAckEnvelope.Payload, &ackPayload); err != nil {
+		t.Fatalf("decode board.snapshot.ack payload: %v", err)
+	}
+
+	if ackPayload.SnapshotVersion != 11 {
+		t.Fatalf("snapshot_version = %d, want %d", ackPayload.SnapshotVersion, 11)
+	}
+}
+
 func TestWebSocketParticipantLeftNotifiesRemainingParticipantsOnDisconnect(t *testing.T) {
 	t.Parallel()
 
@@ -481,19 +804,7 @@ func TestWebSocketParticipantLeftNotifiesRemainingParticipantsOnDisconnect(t *te
 		t.Fatalf("decode guest session.joined envelope: %v", err)
 	}
 
-	if err := ownerConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set owner read deadline for participant.joined: %v", err)
-	}
-
-	_, joinedEventRaw, err := ownerConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read owner participant.joined message: %v", err)
-	}
-
-	var joinedEventEnvelope wsMessage
-	if err := json.Unmarshal(joinedEventRaw, &joinedEventEnvelope); err != nil {
-		t.Fatalf("decode owner participant.joined envelope: %v", err)
-	}
+	joinedEventEnvelope := readWebSocketMessageByType(t, ownerConn, "participant.joined", 2*time.Second)
 
 	if joinedEventEnvelope.Type != "participant.joined" {
 		t.Fatalf("event type = %q, want %q", joinedEventEnvelope.Type, "participant.joined")
@@ -503,19 +814,7 @@ func TestWebSocketParticipantLeftNotifiesRemainingParticipantsOnDisconnect(t *te
 		t.Fatalf("close guest websocket: %v", err)
 	}
 
-	_, leftEventRaw, err := ownerConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read owner participant.left message: %v", err)
-	}
-
-	if err := ownerConn.SetReadDeadline(time.Time{}); err != nil {
-		t.Fatalf("clear owner read deadline: %v", err)
-	}
-
-	var leftEventEnvelope wsMessage
-	if err := json.Unmarshal(leftEventRaw, &leftEventEnvelope); err != nil {
-		t.Fatalf("decode owner participant.left envelope: %v", err)
-	}
+	leftEventEnvelope := readWebSocketMessageByType(t, ownerConn, "participant.left", 2*time.Second)
 
 	if leftEventEnvelope.Type != "participant.left" {
 		t.Fatalf("event type = %q, want %q", leftEventEnvelope.Type, "participant.left")
@@ -762,4 +1061,38 @@ func dialWebSocket(t *testing.T, endpoint string) *websocket.Conn {
 	}
 
 	return connection
+}
+
+func readWebSocketMessageByType(
+	t *testing.T,
+	conn *websocket.Conn,
+	expectedType string,
+	timeout time.Duration,
+) wsMessage {
+	t.Helper()
+
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	defer func() {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			t.Fatalf("clear read deadline: %v", err)
+		}
+	}()
+
+	for {
+		_, rawMessage, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read websocket message while waiting for %s: %v", expectedType, err)
+		}
+
+		var envelope wsMessage
+		if err := json.Unmarshal(rawMessage, &envelope); err != nil {
+			t.Fatalf("decode websocket message while waiting for %s: %v", expectedType, err)
+		}
+
+		if envelope.Type == expectedType {
+			return envelope
+		}
+	}
 }
