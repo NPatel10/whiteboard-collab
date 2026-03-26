@@ -25,6 +25,10 @@ export interface BoardActionLogEntry<TKind extends BoardActionKind = BoardAction
 	receivedAt: ISODateTimeString;
 }
 
+export interface RestoreCreatorBoardResult {
+	restoredFromStorage: boolean;
+}
+
 function createEmptyBoardState(): BoardState {
 	return {
 		elements: [],
@@ -143,15 +147,20 @@ export class LocalBoardStore {
 	restoreCreatorBoard(
 		boardId: string,
 		options: PersistCreatorBoardSnapshotOptions & PersistCreatorBoardActionLogOptions = {}
-	) {
+	): RestoreCreatorBoardResult {
 		const restoredState = restoreCreatorBoardState(boardId, options);
 		if (restoredState.snapshot === null) {
-			return false;
+			this.clear();
+			return {
+				restoredFromStorage: false
+			};
 		}
 
 		this.replaceSnapshot(restoredState.snapshot);
 		this.actionLog = restoredState.actionLog;
-		return true;
+		return {
+			restoredFromStorage: true
+		};
 	}
 
 	appendAction<TKind extends BoardActionKind>(

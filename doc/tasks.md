@@ -87,7 +87,7 @@
 - [x] Persist creator action log to local storage.
 - [x] Restore creator board from local storage on reload.
 - [x] Ensure guests do not auto-persist board state.
-- [ ] Handle missing or cleared local storage by creating a fresh board.
+- [x] Handle missing or cleared local storage by creating a fresh board.
 
 ## Phase 8: Hardening
 

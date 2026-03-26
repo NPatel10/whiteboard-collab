@@ -312,12 +312,12 @@ describe('LocalBoardStore', () => {
 		});
 
 		const store = new LocalBoardStore();
-		const didRestore = store.restoreCreatorBoard('board_1', {
+		const restoreResult = store.restoreCreatorBoard('board_1', {
 			isBrowser: true,
 			storage
 		});
 
-		expect(didRestore).toBe(true);
+		expect(restoreResult).toEqual({ restoredFromStorage: true });
 		expect(store.snapshotVersion).toBe(7);
 		expect(store.actionCursor).toBe(42);
 		expect(store.boardState).toEqual(snapshot.board_state);
@@ -329,16 +329,48 @@ describe('LocalBoardStore', () => {
 		]);
 	});
 
-	it('does not restore when snapshot storage is missing', () => {
+	it('creates a fresh board when snapshot storage is missing', () => {
 		const store = new LocalBoardStore();
+		store.replaceSnapshot(createSnapshot());
+		store.appendAction(createAction());
 
-		expect(
-			store.restoreCreatorBoard('board_1', {
-				isBrowser: true,
-				storage: createStorage()
-			})
-		).toBe(false);
+		const restoreResult = store.restoreCreatorBoard('board_1', {
+			isBrowser: true,
+			storage: createStorage()
+		});
 
+		expect(restoreResult).toEqual({ restoredFromStorage: false });
+		expect(store.hasSnapshot).toBe(false);
+		expect(store.snapshotVersion).toBe(0);
+		expect(store.actionCursor).toBe(0);
+		expect(store.boardState).toEqual({
+			elements: [],
+			viewport: {
+				x: 0,
+				y: 0,
+				zoom: 1
+			}
+		});
+		expect(store.actionLog).toEqual([]);
+	});
+
+	it('creates a fresh board when only partial storage remains', () => {
+		const storage = createStorage({
+			'whiteboard:creator-action-log:board_1': JSON.stringify([
+				{
+					action: createAction(),
+					receivedAt: '2026-03-26T10:31:00.000Z'
+				}
+			])
+		});
+
+		const store = new LocalBoardStore();
+		const restoreResult = store.restoreCreatorBoard('board_1', {
+			isBrowser: true,
+			storage
+		});
+
+		expect(restoreResult).toEqual({ restoredFromStorage: false });
 		expect(store.hasSnapshot).toBe(false);
 		expect(store.actionLog).toEqual([]);
 	});
