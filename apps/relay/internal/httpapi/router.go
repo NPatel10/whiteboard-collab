@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -148,6 +149,8 @@ func (router *Router) handleSocketMessage(conn *websocket.Conn, data []byte) {
 	switch strings.TrimSpace(envelope.Type) {
 	case "session.create":
 		router.handleSessionCreate(conn, envelope)
+	case "session.join":
+		router.handleSessionJoin(conn, envelope)
 	default:
 		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "unsupported socket message type")
 	}
@@ -194,6 +197,56 @@ func (router *Router) handleSessionCreate(conn *websocket.Conn, envelope inbound
 	}
 }
 
+func (router *Router) handleSessionJoin(conn *websocket.Conn, envelope inboundSocketEnvelope) {
+	var payload sessionJoinPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.join payload is invalid JSON")
+		return
+	}
+
+	payload.JoinCode = strings.TrimSpace(payload.JoinCode)
+	payload.Nickname = strings.TrimSpace(payload.Nickname)
+	payload.DeviceID = strings.TrimSpace(payload.DeviceID)
+	if payload.JoinCode == "" || payload.Nickname == "" || payload.DeviceID == "" {
+		router.writeSocketError(conn, envelope.RequestID, "invalid_message", "session.join payload requires join_code, nickname, and device_id")
+		return
+	}
+
+	session, actorID, err := router.createGuestSession(payload)
+	if err != nil {
+		switch {
+		case errors.Is(err, roomstore.ErrJoinCodeNotFound):
+			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonInvalidCode)
+		case errors.Is(err, roomstore.ErrBoardFull):
+			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonBoardFull)
+		case errors.Is(err, roomstore.ErrBoardNotFound):
+			router.writeSessionJoinRejected(conn, envelope.RequestID, joinRejectedReasonBoardUnavailable)
+		default:
+			router.logger.Error("failed to join board session", "error", err)
+			router.writeSocketError(conn, envelope.RequestID, "internal_error", "failed to join board session")
+		}
+
+		return
+	}
+
+	response := outboundSocketEnvelope{
+		Type:      "session.joined",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   actorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: sessionJoinedPayload{
+			Role:         "guest",
+			OwnerActorID: session.OwnerActorID,
+			Participants: buildParticipantSummaries(session.Participants),
+		},
+	}
+
+	if err := conn.WriteJSON(response); err != nil {
+		router.logger.Warn("failed to write session.joined message", "error", err)
+	}
+}
+
 func (router *Router) createOwnerSession(payload sessionCreatePayload) (roomstore.BoardSession, string, error) {
 	boardID, err := router.idGenerator("board")
 	if err != nil {
@@ -223,6 +276,44 @@ func (router *Router) createOwnerSession(payload sessionCreatePayload) (roomstor
 	return session, actorID, nil
 }
 
+func (router *Router) createGuestSession(payload sessionJoinPayload) (roomstore.BoardSession, string, error) {
+	actorID, err := router.idGenerator("actor")
+	if err != nil {
+		return roomstore.BoardSession{}, "", fmt.Errorf("generate guest actor id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	session, err := router.store.JoinBoard(roomstore.JoinBoardParams{
+		JoinCode: payload.JoinCode,
+		Participant: roomstore.Participant{
+			ActorID:  actorID,
+			DeviceID: payload.DeviceID,
+			Nickname: payload.Nickname,
+			Role:     roomstore.RoleGuest,
+			Color:    defaultGuestColor,
+		},
+	}, now)
+	if err != nil {
+		return roomstore.BoardSession{}, "", err
+	}
+
+	return session, actorID, nil
+}
+
+func buildParticipantSummaries(participants []roomstore.Participant) []participantSummaryPayload {
+	summaries := make([]participantSummaryPayload, 0, len(participants))
+	for _, participant := range participants {
+		summaries = append(summaries, participantSummaryPayload{
+			ActorID:  participant.ActorID,
+			Nickname: participant.Nickname,
+			Role:     string(participant.Role),
+			Color:    participant.Color,
+		})
+	}
+
+	return summaries
+}
+
 func (router *Router) writeSocketError(conn *websocket.Conn, requestID, code, message string) {
 	payload := outboundSocketEnvelope{
 		Type:      "error",
@@ -236,6 +327,21 @@ func (router *Router) writeSocketError(conn *websocket.Conn, requestID, code, me
 
 	if err := conn.WriteJSON(payload); err != nil {
 		router.logger.Warn("failed to write websocket error message", "error", err)
+	}
+}
+
+func (router *Router) writeSessionJoinRejected(conn *websocket.Conn, requestID, reason string) {
+	payload := outboundSocketEnvelope{
+		Type:      "session.join_rejected",
+		RequestID: requestID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload: sessionJoinRejectedPayload{
+			Reason: reason,
+		},
+	}
+
+	if err := conn.WriteJSON(payload); err != nil {
+		router.logger.Warn("failed to write session.join_rejected message", "error", err)
 	}
 }
 
@@ -400,6 +506,29 @@ type sessionCreatedPayload struct {
 	ExpiresInSeconds int    `json:"expires_in_seconds"`
 }
 
+type sessionJoinPayload struct {
+	JoinCode string `json:"join_code"`
+	Nickname string `json:"nickname"`
+	DeviceID string `json:"device_id"`
+}
+
+type sessionJoinedPayload struct {
+	Role         string                      `json:"role"`
+	OwnerActorID string                      `json:"owner_actor_id"`
+	Participants []participantSummaryPayload `json:"participants"`
+}
+
+type sessionJoinRejectedPayload struct {
+	Reason string `json:"reason"`
+}
+
+type participantSummaryPayload struct {
+	ActorID  string `json:"actor_id"`
+	Nickname string `json:"nickname"`
+	Role     string `json:"role"`
+	Color    string `json:"color"`
+}
+
 type socketErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -409,6 +538,11 @@ const (
 	defaultMaxParticipantsPerBoard = 4
 	defaultJoinCodeLength          = 8
 	defaultOwnerColor              = "#f97316"
+	defaultGuestColor              = "#0ea5e9"
 	defaultCodeTTL                 = 24 * time.Hour
 	defaultHeartbeatInterval       = 25 * time.Second
+
+	joinRejectedReasonInvalidCode      = "invalid_code"
+	joinRejectedReasonBoardFull        = "board_full"
+	joinRejectedReasonBoardUnavailable = "board_unavailable"
 )

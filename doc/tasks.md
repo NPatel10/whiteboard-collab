@@ -23,9 +23,9 @@
 ## Phase 2: WebSocket Protocol
 
 - [x] Implement `session.create`.
-- [ ] Implement `session.join`.
-- [ ] Implement `session.join_rejected`.
-- [ ] Implement `session.created` and `session.joined`.
+- [x] Implement `session.join`.
+- [x] Implement `session.join_rejected`.
+- [x] Implement `session.created` and `session.joined`.
 - [ ] Implement `participant.joined` and `participant.left`.
 - [ ] Implement `board.snapshot.request`.
 - [ ] Implement `board.snapshot`.
