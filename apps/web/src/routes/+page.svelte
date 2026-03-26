@@ -14,6 +14,7 @@
 	} from '$lib';
 
 	type ShellState = 'landing' | 'board';
+	type OverlayState = 'invalid-code' | 'board-full' | 'reconnecting' | null;
 
 	type ToolbarOption = {
 		id: WhiteboardTool;
@@ -28,6 +29,7 @@
 
 	const defaultJoinCode = 'A7F3KQ9X';
 	const invalidJoinCodeError = 'Enter a valid 8-character board code.';
+	const boardFullMessage = 'This board is full. All 4 seats are occupied.';
 	const ownerParticipant: ParticipantSummary = {
 		actor_id: 'u_owner_1',
 		nickname: 'Nayan',
@@ -64,6 +66,7 @@
 	let joinError = $state<string | null>(null);
 	let isJoinFormOpen = $state(false);
 	let activeTool = $state<WhiteboardTool>('pen');
+	let overlayState = $state<OverlayState>(null);
 	let shellState = $state<ShellState>('landing');
 
 	function createBoard() {
@@ -76,29 +79,41 @@
 		});
 		isJoinFormOpen = false;
 		joinError = null;
+		overlayState = null;
 		openBoard('owner');
 	}
 
 	function openBoard(role: ParticipantRole) {
 		appSessionState.setRole(role);
 		shellState = 'board';
+		overlayState = null;
 		appConnectionState.setConnected();
 		activeTool = role === 'owner' ? 'pen' : 'select';
 	}
 
 	function showReconnectOverlay() {
 		shellState = 'board';
+		overlayState = 'reconnecting';
 		appConnectionState.setReconnecting();
+	}
+
+	function showBoardFullOverlay() {
+		shellState = 'board';
+		overlayState = 'board-full';
+		appConnectionState.setConnected();
+		activeTool = 'select';
 	}
 
 	function toggleJoinForm() {
 		isJoinFormOpen = !isJoinFormOpen;
 		joinError = null;
+		overlayState = null;
 		appConnectionState.setDisconnected();
 	}
 
 	function resetToLanding() {
 		shellState = 'landing';
+		overlayState = null;
 		appConnectionState.setDisconnected();
 		appSessionState.clearSession();
 	}
@@ -129,16 +144,19 @@
 
 		if (trimmedNickname.length < 2) {
 			joinError = 'Enter a nickname with at least 2 characters.';
+			overlayState = 'invalid-code';
 			return;
 		}
 
 		if (normalizedJoinCode.length !== 8) {
 			joinError = invalidJoinCodeError;
+			overlayState = 'invalid-code';
 			return;
 		}
 
 		guestNickname = trimmedNickname;
 		joinError = null;
+		overlayState = null;
 		isJoinFormOpen = false;
 		appSessionState.setSession({
 			actorId: 'u_guest_local',
@@ -240,6 +258,14 @@
 							<Button size="lg" variant="outline" class="bg-white/80" onclick={toggleJoinForm}>
 								{isJoinFormOpen ? 'Hide join form' : 'Join board'}
 							</Button>
+							<Button
+								size="lg"
+								variant="outline"
+								class="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+								onclick={showBoardFullOverlay}
+							>
+								Preview board full
+							</Button>
 						</div>
 
 						{#if isJoinFormOpen}
@@ -295,6 +321,10 @@
 								{
 									name: 'Invalid code',
 									body: 'Join validation resolves inside the landing shell so retry stays immediate.'
+								},
+								{
+									name: 'Board full',
+									body: 'Capacity hits 4 / 4, so join requests stay blocked until a seat opens.'
 								}
 							] as state}
 								<div class="rounded-3xl border border-zinc-950/8 bg-white/80 p-4">
@@ -349,6 +379,13 @@
 					<div class="flex flex-wrap gap-2">
 						<Button variant="outline" class="bg-white" onclick={() => openBoard(appSessionState.role ?? 'owner')}>
 							Clear overlay
+						</Button>
+						<Button
+							variant="outline"
+							class="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+							onclick={showBoardFullOverlay}
+						>
+							Show board full
 						</Button>
 						<Button variant="outline" class="bg-white" onclick={showReconnectOverlay}>
 							Show reconnecting
@@ -430,7 +467,27 @@
 								</div>
 							</div>
 
-							{#if appConnectionState.isReconnecting}
+							{#if overlayState === 'board-full'}
+								<div class="absolute inset-0 z-10 flex items-center justify-center bg-rose-950/40 p-6 backdrop-blur-sm">
+									<div class="w-full max-w-md rounded-[1.75rem] border border-rose-200 bg-white/95 p-6 text-zinc-950 shadow-2xl">
+										<p class="text-xs font-semibold uppercase tracking-[0.24em] text-rose-700">Board full</p>
+										<h3 class="mt-3 text-2xl font-semibold tracking-tight">
+											{boardFullMessage}
+										</h3>
+										<p class="mt-3 text-sm leading-6 text-zinc-600">
+											The shell should clearly reject new joins while capacity stays at 4 / 4.
+										</p>
+										<div class="mt-6 flex gap-2">
+											<Button class="bg-rose-600 text-white hover:bg-rose-500" onclick={resetToLanding}>
+												Return to landing
+											</Button>
+											<Button variant="outline" class="bg-white" onclick={() => openBoard(appSessionState.role ?? 'owner')}>
+												Dismiss preview
+											</Button>
+										</div>
+									</div>
+								</div>
+							{:else if appConnectionState.isReconnecting}
 								<div class="absolute inset-0 z-10 flex items-center justify-center bg-zinc-950/35 p-6 backdrop-blur-sm">
 									<div class="w-full max-w-md rounded-[1.75rem] border border-white/20 bg-zinc-950/90 p-6 text-white shadow-2xl">
 										<p class="text-xs font-semibold uppercase tracking-[0.24em] text-amber-300">Reconnecting</p>

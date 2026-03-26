@@ -44,7 +44,7 @@
 - [x] Add app-level connection state store.
 - [ ] Add socket client with reconnect logic.
 - [x] Add session stores for actor id, board id, join code, role, and participants.
-- [ ] Add invalid-code, board-full, and reconnecting UI states.
+- [x] Add invalid-code, board-full, and reconnecting UI states.
 
 ## Phase 4: Whiteboard Core
 
