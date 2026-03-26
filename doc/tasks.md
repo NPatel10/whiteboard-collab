@@ -18,7 +18,7 @@
 - [x] Implement board capacity limit of 4 participants.
 - [ ] Implement heartbeat handling and idle cleanup.
 - [ ] Implement per-IP and per-code rate limiting.
-- [ ] Add structured logging and error responses.
+- [x] Add structured logging and error responses.
 
 ## Phase 2: WebSocket Protocol
 

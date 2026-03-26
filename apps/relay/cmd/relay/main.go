@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("component", "relay.server")
 	startedAt := time.Now().UTC()
 	cfg, err := config.Load()
 	if err != nil {
@@ -25,7 +25,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.NewRouter(startedAt, cfg),
+		Handler:           httpapi.NewRouter(startedAt, cfg, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

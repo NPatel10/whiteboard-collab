@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ import (
 func TestNewRouterHealthz(t *testing.T) {
 	t.Parallel()
 
-	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{})
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/healthz", nil)
 	response := httptest.NewRecorder()
@@ -50,7 +53,7 @@ func TestNewRouterConfig(t *testing.T) {
 		JoinCodeLength:          8,
 		CodeTTL:                 24 * time.Hour,
 		HeartbeatInterval:       25 * time.Second,
-	})
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
 	response := httptest.NewRecorder()
@@ -90,7 +93,7 @@ func TestNewRouterConfig(t *testing.T) {
 func TestNewRouterWebSocketScaffold(t *testing.T) {
 	t.Parallel()
 
-	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{})
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
 	response := httptest.NewRecorder()
@@ -110,7 +113,48 @@ func TestNewRouterWebSocketScaffold(t *testing.T) {
 		t.Fatalf("decode ws scaffold response: %v", err)
 	}
 
-	if payload.Error != "websocket relay endpoint is scaffolded but not implemented yet" {
-		t.Fatalf("error = %q, want scaffold message", payload.Error)
+	if payload.Error.Code != "not_implemented" {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, "not_implemented")
+	}
+
+	if payload.Error.Message != "websocket relay endpoint is scaffolded but not implemented yet" {
+		t.Fatalf("error message = %q, want scaffold message", payload.Error.Message)
+	}
+}
+
+func TestNewRouterReturnsStructuredErrorsForUnknownRoutes(t *testing.T) {
+	t.Parallel()
+
+	var logBuffer bytes.Buffer
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&logBuffer, nil)))
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/unknown", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+
+	var payload errorResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode unknown route response: %v", err)
+	}
+
+	if payload.Error.Code != "method_not_allowed" {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, "method_not_allowed")
+	}
+
+	if !strings.Contains(logBuffer.String(), "component=relay.http") {
+		t.Fatalf("log output = %q, want component field", logBuffer.String())
+	}
+
+	if !strings.Contains(logBuffer.String(), "status=405") {
+		t.Fatalf("log output = %q, want status field", logBuffer.String())
+	}
+
+	if !strings.Contains(logBuffer.String(), "error_code=method_not_allowed") {
+		t.Fatalf("log output = %q, want error code field", logBuffer.String())
 	}
 }
