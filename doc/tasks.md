@@ -39,8 +39,8 @@
 ## Phase 3: Frontend App Shell
 
 - [x] Create single-route SvelteKit app shell for landing and board states.
-- [ ] Build landing state with `Create board` and `Join board` flows.
-- [ ] Build join form with code and nickname inputs.
+- [x] Build landing state with `Create board` and `Join board` flows.
+- [x] Build join form with code and nickname inputs.
 - [ ] Add app-level connection state store.
 - [ ] Add socket client with reconnect logic.
 - [ ] Add session stores for actor id, board id, join code, role, and participants.

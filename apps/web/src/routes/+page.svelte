@@ -2,6 +2,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import { Input } from '$lib/components/ui/input';
 	import { Separator } from '$lib/components/ui/separator';
 	import {
 		publicRuntimeConfig,
@@ -24,10 +25,9 @@
 		value: string;
 	};
 
-	const previewJoinCode = 'A7F3KQ9X';
-	const participants: ParticipantSummary[] = [
+	const defaultJoinCode = 'A7F3KQ9X';
+	const boardParticipants: ParticipantSummary[] = [
 		{ actor_id: 'u_owner_1', nickname: 'Nayan', role: 'owner', color: '#f97316' },
-		{ actor_id: 'u_guest_1', nickname: 'Mira', role: 'guest', color: '#10b981' },
 		{ actor_id: 'u_guest_2', nickname: 'Kai', role: 'guest', color: '#0ea5e9' }
 	];
 	const tools: ToolbarOption[] = [
@@ -49,10 +49,22 @@
 		{ label: 'Sync status', value: 'Ready' }
 	];
 
+	let currentJoinCode = $state(defaultJoinCode);
+	let guestNickname = $state(publicRuntimeConfig.defaultNickname);
+	let joinCode = $state('');
+	let joinError = $state<string | null>(null);
+	let isJoinFormOpen = $state(false);
 	let activeTool = $state<WhiteboardTool>('pen');
 	let boardRole = $state<ParticipantRole>('owner');
 	let overlayState = $state<OverlayState>(null);
 	let shellState = $state<ShellState>('landing');
+
+	function createBoard() {
+		currentJoinCode = defaultJoinCode;
+		isJoinFormOpen = false;
+		joinError = null;
+		openBoard('owner');
+	}
 
 	function openBoard(role: ParticipantRole) {
 		boardRole = role;
@@ -66,9 +78,10 @@
 		overlayState = 'reconnecting';
 	}
 
-	function showInvalidCodeState() {
-		shellState = 'landing';
-		overlayState = 'invalid-code';
+	function toggleJoinForm() {
+		isJoinFormOpen = !isJoinFormOpen;
+		joinError = null;
+		overlayState = null;
 	}
 
 	function resetToLanding() {
@@ -82,6 +95,52 @@
 
 	function isActiveTool(toolId: WhiteboardTool) {
 		return activeTool === toolId;
+	}
+
+	function handleJoinCodeInput(event: Event) {
+		const target = event.currentTarget as HTMLInputElement;
+		joinCode = target.value.replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 8);
+	}
+
+	function handleNicknameInput(event: Event) {
+		const target = event.currentTarget as HTMLInputElement;
+		guestNickname = target.value.slice(0, 24);
+	}
+
+	function submitJoin(event: SubmitEvent) {
+		event.preventDefault();
+
+		const trimmedNickname = guestNickname.trim();
+		const normalizedJoinCode = joinCode.trim().toUpperCase();
+
+		if (trimmedNickname.length < 2) {
+			joinError = 'Enter a nickname with at least 2 characters.';
+			overlayState = null;
+			return;
+		}
+
+		if (normalizedJoinCode.length !== 8) {
+			joinError = 'Enter a valid 8-character board code.';
+			overlayState = 'invalid-code';
+			return;
+		}
+
+		currentJoinCode = normalizedJoinCode;
+		guestNickname = trimmedNickname;
+		joinError = null;
+		isJoinFormOpen = false;
+		openBoard('guest');
+	}
+
+	function getParticipants(): ParticipantSummary[] {
+		const guestParticipant: ParticipantSummary = {
+			actor_id: 'u_guest_local',
+			nickname: guestNickname,
+			role: 'guest',
+			color: '#10b981'
+		};
+
+		return [boardParticipants[0], guestParticipant, boardParticipants[1]];
 	}
 </script>
 
@@ -113,26 +172,14 @@
 			<section class="grid flex-1 items-center gap-6 py-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(24rem,0.85fr)] lg:py-14">
 				<div class="space-y-8">
 					<div class="space-y-4">
-						<Badge class="bg-amber-500 text-amber-950">Single-route app shell</Badge>
+						<Badge class="bg-amber-500 text-amber-950">Create and join from the same route</Badge>
 						<h2 class="max-w-2xl text-4xl font-semibold tracking-tight text-zinc-950 sm:text-6xl">
-							Landing, board, reconnecting, and invalid-code states live in the same route.
+							Create a board fast, or join one with code plus nickname without leaving `/`.
 						</h2>
 						<p class="max-w-xl text-lg leading-8 text-zinc-700">
-							This shell keeps navigation flat so socket, board, and participant state can survive local
-							route changes. The board view is already split for owner and guest chrome.
+							The landing state now carries the real entry flow: owner creation routes straight into the
+							board shell, while guests open an inline form that validates the join code before transition.
 						</p>
-					</div>
-
-					<div class="flex flex-wrap gap-3">
-						<Button size="lg" class="bg-zinc-950 text-white hover:bg-zinc-800" onclick={() => openBoard('owner')}>
-							Preview owner board
-						</Button>
-						<Button size="lg" variant="outline" class="bg-white/80" onclick={() => openBoard('guest')}>
-							Preview guest board
-						</Button>
-						<Button size="lg" variant="ghost" class="text-zinc-700 hover:bg-white/70" onclick={showInvalidCodeState}>
-							Show invalid-code state
-						</Button>
 					</div>
 
 					<div class="grid gap-3 sm:grid-cols-3">
@@ -153,39 +200,80 @@
 					<CardHeader class="gap-3 border-b border-zinc-950/5">
 						<div class="flex items-center justify-between gap-3">
 							<div>
-								<CardTitle class="text-xl text-zinc-950">State Preview</CardTitle>
+								<CardTitle class="text-xl text-zinc-950">Start A Session</CardTitle>
 								<CardDescription class="text-zinc-600">
-									The same page renders all runtime states without leaving `/`.
+									Creation and joining stay in one lightweight landing shell.
 								</CardDescription>
 							</div>
-							<Badge class="bg-zinc-950 text-white">Route shell</Badge>
+							<Badge class="bg-zinc-950 text-white">Landing flow</Badge>
 						</div>
 					</CardHeader>
 					<CardContent class="space-y-5 pt-6">
 						<div class="grid gap-3">
+							<Button size="lg" class="bg-zinc-950 text-white hover:bg-zinc-800" onclick={createBoard}>
+								Create board
+							</Button>
+							<Button size="lg" variant="outline" class="bg-white/80" onclick={toggleJoinForm}>
+								{isJoinFormOpen ? 'Hide join form' : 'Join board'}
+							</Button>
+						</div>
+
+						{#if isJoinFormOpen}
+							<form class="space-y-4 rounded-[1.75rem] border border-zinc-950/8 bg-zinc-50/80 p-5" onsubmit={submitJoin}>
+								<div class="space-y-2">
+									<label class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500" for="join-code">
+										Join code
+									</label>
+									<Input
+										id="join-code"
+										class="bg-white uppercase tracking-[0.32em]"
+										placeholder="A7F3KQ9X"
+										value={joinCode}
+										maxlength={8}
+										aria-invalid={overlayState === 'invalid-code'}
+										oninput={handleJoinCodeInput}
+									/>
+								</div>
+
+								<div class="space-y-2">
+									<label class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500" for="nickname">
+										Nickname
+									</label>
+									<Input
+										id="nickname"
+										class="bg-white"
+										placeholder="Guest"
+										value={guestNickname}
+										maxlength={24}
+										oninput={handleNicknameInput}
+									/>
+								</div>
+
+								<div class="flex flex-wrap items-center justify-between gap-3">
+									<p class="text-sm text-zinc-600">
+										Guest access stays lightweight: share code plus nickname, then transition into the guest board shell.
+									</p>
+									<Button type="submit" class="bg-amber-500 text-amber-950 hover:bg-amber-400">Join board</Button>
+								</div>
+							</form>
+						{/if}
+
+						<div class="grid gap-3">
 							{#each [
 								{
-									name: 'Landing',
-									body: 'Create and join entry points stay together with validation UI.'
+									name: 'Owner flow',
+									body: 'Create board moves directly into the owner shell with share and import controls.'
 								},
 								{
-									name: 'Owner board',
-									body: 'Top bar, tool rail, canvas, and participant panel are already laid out.'
-								},
-								{
-									name: 'Guest board',
-									body: 'Owner-only actions drop away while export and sync status remain visible.'
-								},
-								{
-									name: 'Reconnecting',
-									body: 'Board stays mounted and receives an overlay instead of navigating away.'
+									name: 'Guest flow',
+									body: 'Join board opens an inline form for code and nickname before entering the guest shell.'
 								},
 								{
 									name: 'Invalid code',
-									body: 'Join failure resolves inline on the landing shell instead of a separate page.'
+									body: 'Join validation resolves inside the landing shell so retry stays immediate.'
 								}
 							] as state}
-								<div class="rounded-3xl border border-zinc-950/8 bg-zinc-50/80 p-4">
+								<div class="rounded-3xl border border-zinc-950/8 bg-white/80 p-4">
 									<div class="flex items-center justify-between gap-3">
 										<p class="text-sm font-semibold text-zinc-900">{state.name}</p>
 										<div class="size-2 rounded-full bg-amber-500"></div>
@@ -195,13 +283,14 @@
 							{/each}
 						</div>
 
-						{#if overlayState === 'invalid-code'}
+						{#if joinError}
 							<div class="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-rose-900">
-								<p class="text-sm font-semibold uppercase tracking-[0.24em] text-rose-700">Invalid Code</p>
-								<p class="mt-3 text-base font-medium">The join code is invalid, expired, or unavailable.</p>
+								<p class="text-sm font-semibold uppercase tracking-[0.24em] text-rose-700">
+									{overlayState === 'invalid-code' ? 'Invalid Code' : 'Validation Error'}
+								</p>
+								<p class="mt-3 text-base font-medium">{joinError}</p>
 								<p class="mt-2 text-sm leading-6 text-rose-700">
-									The landing shell handles this inline so the user can retry immediately without losing
-									context.
+									The landing shell keeps the form mounted so the next attempt is immediate.
 								</p>
 							</div>
 						{/if}
@@ -224,7 +313,7 @@
 							{boardRole === 'owner' ? 'Authority view for snapshots and controls' : 'Guest view with owner-synced state'}
 						</h2>
 						<p class="text-sm text-zinc-600">
-							Board <span class="font-medium text-zinc-900">{previewJoinCode}</span> stays in the same route while UI
+							Board <span class="font-medium text-zinc-900">{currentJoinCode}</span> stays in the same route while UI
 							chrome adapts by role and connection state.
 						</p>
 					</div>
@@ -361,7 +450,7 @@
 						<Separator class="my-5 bg-zinc-950/8" />
 
 						<div class="space-y-3">
-							{#each participants as participant}
+							{#each getParticipants() as participant}
 								<div class="flex items-center justify-between gap-3 rounded-3xl border border-zinc-950/8 bg-white/85 px-4 py-3">
 									<div class="flex items-center gap-3">
 										<div
