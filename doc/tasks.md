@@ -55,7 +55,7 @@
 - [ ] Implement draw pipeline with throttled or batched actions.
 - [x] Implement selection and transform behavior.
 - [x] Implement delete behavior.
-- [ ] Implement per-user undo and redo stacks.
+- [x] Implement per-user undo and redo stacks.
 - [x] Implement import from JSON.
 - [ ] Implement export to JSON and PNG.
 

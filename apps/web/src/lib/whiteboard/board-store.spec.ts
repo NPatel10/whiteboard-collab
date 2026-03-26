@@ -351,6 +351,66 @@ describe('LocalBoardStore', () => {
 		expect(store.boardState.elements.map((element) => element.id)).toEqual(['stroke_1', 'sticky_1']);
 	});
 
+	it('captures undo and redo history for local board edits', () => {
+		const store = new LocalBoardStore();
+		store.replaceSnapshot(createEditableSnapshot());
+		store.updateSelection(['shape_1', 'sticky_1']);
+
+		expect(
+			store.transformObject(
+				'shape_1',
+				{
+					x: 180,
+					y: 200,
+					width: 240,
+					height: 140,
+					rotation: 25
+				},
+				'2026-03-26T10:40:00.000Z'
+			)
+		).toBe(true);
+		expect(store.canUndo).toBe(true);
+		expect(store.canRedo).toBe(false);
+		expect(store.undoDepth).toBe(1);
+
+		expect(store.undo()).toBe(true);
+		expect(store.canUndo).toBe(false);
+		expect(store.canRedo).toBe(true);
+		expect(store.boardState.elements.find((element) => element.id === 'shape_1')).toMatchObject({
+			x: 140,
+			y: 160,
+			width: 200,
+			height: 120,
+			rotation: 0
+		});
+		expect(store.selectedObjectIds).toEqual(['shape_1', 'sticky_1']);
+
+		expect(store.redo()).toBe(true);
+		expect(store.canUndo).toBe(true);
+		expect(store.canRedo).toBe(false);
+		expect(store.boardState.elements.find((element) => element.id === 'shape_1')).toMatchObject({
+			x: 180,
+			y: 200,
+			width: 240,
+			height: 140,
+			rotation: 25
+		});
+
+		expect(
+			store.deleteObjects(['shape_1', 'sticky_1'])
+		).toBe(true);
+		expect(store.canRedo).toBe(false);
+		expect(store.undoDepth).toBe(2);
+		expect(store.undo()).toBe(true);
+		expect(store.boardState.elements.map((element) => element.id)).toEqual([
+			'stroke_1',
+			'shape_1',
+			'text_1',
+			'sticky_1'
+		]);
+		expect(store.selectedObjectIds).toEqual(['shape_1', 'sticky_1']);
+	});
+
 	it('persists creator snapshots without exposing live store state', () => {
 		const store = new LocalBoardStore();
 		store.replaceSnapshot(createSnapshot());
@@ -556,6 +616,15 @@ describe('LocalBoardStore', () => {
 		const store = new LocalBoardStore();
 		store.replaceSnapshot(createSnapshot());
 		store.appendAction(createAction());
+		store.updateSelection(['shape_1']);
+		store.transformObject(
+			'shape_1',
+			{
+				x: 180,
+				y: 200
+			},
+			'2026-03-26T10:40:00.000Z'
+		);
 
 		store.clear();
 
@@ -571,5 +640,7 @@ describe('LocalBoardStore', () => {
 			}
 		});
 		expect(store.actionLog).toEqual([]);
+		expect(store.canUndo).toBe(false);
+		expect(store.canRedo).toBe(false);
 	});
 });

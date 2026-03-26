@@ -33,6 +33,13 @@ export interface RestoreCreatorBoardResult {
 	restoredFromStorage: boolean;
 }
 
+interface BoardEditorState {
+	boardState: BoardState;
+	selectedObjectIds: ObjectId[];
+}
+
+const defaultUndoHistoryLimit = 50;
+
 function createEmptyBoardState(): BoardState {
 	return {
 		elements: [],
@@ -46,6 +53,13 @@ function createEmptyBoardState(): BoardState {
 
 function createEmptySelection() {
 	return [] as ObjectId[];
+}
+
+function cloneEditorState(state: BoardEditorState): BoardEditorState {
+	return {
+		boardState: cloneSerializable(state.boardState),
+		selectedObjectIds: [...state.selectedObjectIds]
+	};
 }
 
 function cloneSerializable<T>(value: T): T {
@@ -156,6 +170,8 @@ export class LocalBoardStore {
 	boardState = $state<BoardState>(createEmptyBoardState());
 	actionLog = $state<BoardActionLogEntry[]>([]);
 	selectedObjectIds = $state<ObjectId[]>(createEmptySelection());
+	#undoStack: BoardEditorState[] = [];
+	#redoStack: BoardEditorState[] = [];
 
 	get hasSnapshot() {
 		return this.snapshotVersion > 0;
@@ -167,6 +183,22 @@ export class LocalBoardStore {
 
 	get actionCount() {
 		return this.actionLog.length;
+	}
+
+	get canUndo() {
+		return this.#undoStack.length > 0;
+	}
+
+	get canRedo() {
+		return this.#redoStack.length > 0;
+	}
+
+	get undoDepth() {
+		return this.#undoStack.length;
+	}
+
+	get redoDepth() {
+		return this.#redoStack.length;
 	}
 
 	getSnapshot(): LocalBoardSnapshot {
@@ -184,6 +216,7 @@ export class LocalBoardStore {
 		this.boardState = normalized.boardState;
 		this.actionLog = [];
 		this.selectedObjectIds = createEmptySelection();
+		this.#clearHistory();
 	}
 
 	loadSnapshot(snapshot: LocalBoardSnapshot | BoardSnapshotPayload) {
@@ -207,6 +240,28 @@ export class LocalBoardStore {
 
 	clearSelection() {
 		this.selectedObjectIds = createEmptySelection();
+	}
+
+	undo() {
+		const previousState = this.#undoStack.pop();
+		if (!previousState) {
+			return false;
+		}
+
+		this.#redoStack.push(this.#captureEditorState());
+		this.#restoreEditorState(previousState);
+		return true;
+	}
+
+	redo() {
+		const nextState = this.#redoStack.pop();
+		if (!nextState) {
+			return false;
+		}
+
+		this.#undoStack.push(this.#captureEditorState());
+		this.#restoreEditorState(nextState);
+		return true;
 	}
 
 	transformObject(
@@ -239,10 +294,12 @@ export class LocalBoardStore {
 			return false;
 		}
 
+		this.#pushUndoCheckpoint();
 		this.boardState = {
 			...this.boardState,
 			elements: nextElements
 		};
+		this.#clearRedoStack();
 		return true;
 	}
 
@@ -270,11 +327,13 @@ export class LocalBoardStore {
 			return false;
 		}
 
+		this.#pushUndoCheckpoint();
 		this.boardState = {
 			...this.boardState,
 			elements: nextElements
 		};
 		this.selectedObjectIds = this.selectedObjectIds.filter((objectId) => !objectIdSet.has(objectId));
+		this.#clearRedoStack();
 		return true;
 	}
 
@@ -345,6 +404,35 @@ export class LocalBoardStore {
 		this.boardState = createEmptyBoardState();
 		this.actionLog = [];
 		this.selectedObjectIds = createEmptySelection();
+		this.#clearHistory();
+	}
+
+	#captureEditorState(): BoardEditorState {
+		return cloneEditorState({
+			boardState: this.boardState,
+			selectedObjectIds: this.selectedObjectIds
+		});
+	}
+
+	#restoreEditorState(state: BoardEditorState) {
+		this.boardState = cloneSerializable(state.boardState);
+		this.selectedObjectIds = [...state.selectedObjectIds];
+	}
+
+	#pushUndoCheckpoint() {
+		this.#undoStack.push(this.#captureEditorState());
+		if (this.#undoStack.length > defaultUndoHistoryLimit) {
+			this.#undoStack.shift();
+		}
+	}
+
+	#clearRedoStack() {
+		this.#redoStack = [];
+	}
+
+	#clearHistory() {
+		this.#undoStack = [];
+		this.#redoStack = [];
 	}
 }
 
