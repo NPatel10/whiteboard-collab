@@ -3,6 +3,7 @@ package roomstore
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -12,8 +13,10 @@ var (
 	ErrBoardAlreadyExists       = errors.New("board already exists")
 	ErrBoardFull                = errors.New("board is full")
 	ErrBoardNotFound            = errors.New("board not found")
+	ErrInvalidJoinCodeLength    = errors.New("join code length must be greater than zero")
 	ErrInvalidMaxParticipants   = errors.New("max participants must be greater than zero")
 	ErrJoinCodeAlreadyExists    = errors.New("join code already exists")
+	ErrJoinCodeGenerationFailed = errors.New("unable to generate unique join code")
 	ErrJoinCodeNotFound         = errors.New("join code not found")
 	ErrParticipantAlreadyExists = errors.New("participant already exists")
 	ErrParticipantNotFound      = errors.New("participant not found")
@@ -60,6 +63,8 @@ type JoinBoardParams struct {
 type Store struct {
 	mu                 sync.RWMutex
 	maxParticipants    int
+	joinCodeLength     int
+	randomSource       io.Reader
 	boardIDsByJoinCode map[string]string
 	boardsByID         map[string]*boardRecord
 }
@@ -74,16 +79,28 @@ type boardRecord struct {
 	Participants     map[string]Participant
 }
 
-func New(maxParticipants int) (*Store, error) {
+type Option func(*Store) error
+
+func New(maxParticipants int, options ...Option) (*Store, error) {
 	if maxParticipants <= 0 {
 		return nil, ErrInvalidMaxParticipants
 	}
 
-	return &Store{
+	store := &Store{
 		maxParticipants:    maxParticipants,
+		joinCodeLength:     defaultJoinCodeLength,
+		randomSource:       newDefaultRandomSource(),
 		boardIDsByJoinCode: make(map[string]string),
 		boardsByID:         make(map[string]*boardRecord),
-	}, nil
+	}
+
+	for _, option := range options {
+		if err := option(store); err != nil {
+			return nil, err
+		}
+	}
+
+	return store, nil
 }
 
 func (store *Store) CreateBoard(params CreateBoardParams, now time.Time) (BoardSession, error) {
@@ -92,10 +109,6 @@ func (store *Store) CreateBoard(params CreateBoardParams, now time.Time) (BoardS
 	}
 
 	joinCode := normalizeJoinCode(params.JoinCode)
-	if joinCode == "" {
-		return BoardSession{}, fmt.Errorf("join code is required")
-	}
-
 	owner, err := prepareParticipant(params.Owner, RoleOwner, now)
 	if err != nil {
 		return BoardSession{}, err
@@ -108,7 +121,12 @@ func (store *Store) CreateBoard(params CreateBoardParams, now time.Time) (BoardS
 		return BoardSession{}, ErrBoardAlreadyExists
 	}
 
-	if _, exists := store.boardIDsByJoinCode[joinCode]; exists {
+	if joinCode == "" {
+		joinCode, err = store.generateUniqueJoinCodeLocked()
+		if err != nil {
+			return BoardSession{}, err
+		}
+	} else if _, exists := store.boardIDsByJoinCode[joinCode]; exists {
 		return BoardSession{}, ErrJoinCodeAlreadyExists
 	}
 
@@ -280,4 +298,21 @@ func removeValue(values []string, target string) []string {
 	}
 
 	return filtered
+}
+
+func (store *Store) generateUniqueJoinCodeLocked() (string, error) {
+	for attempt := 0; attempt < maxJoinCodeGenerationAttempts; attempt++ {
+		joinCode, err := generateJoinCode(store.randomSource, store.joinCodeLength)
+		if err != nil {
+			return "", err
+		}
+
+		if _, exists := store.boardIDsByJoinCode[joinCode]; exists {
+			continue
+		}
+
+		return joinCode, nil
+	}
+
+	return "", ErrJoinCodeGenerationFailed
 }

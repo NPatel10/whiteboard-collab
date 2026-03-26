@@ -1,7 +1,9 @@
 package roomstore
 
 import (
+	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,5 +175,86 @@ func TestStoreRejectsDuplicateJoinCodesAndRemovesParticipants(t *testing.T) {
 
 	if updated.Participants[0].ActorID != "owner_1" {
 		t.Fatalf("RemoveParticipant() owner actor id = %q, want %q", updated.Participants[0].ActorID, "owner_1")
+	}
+}
+
+func TestStoreGeneratesEightCharacterAlphanumericJoinCodes(t *testing.T) {
+	t.Parallel()
+
+	store, err := New(4, WithRandomSource(bytes.NewReader([]byte{0, 1, 2, 3, 4, 5, 6, 7})))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
+	created, err := store.CreateBoard(CreateBoardParams{
+		BoardID: "board_1",
+		Owner: Participant{
+			ActorID:  "owner_1",
+			DeviceID: "device_owner_1",
+			Nickname: "Owner",
+			Role:     RoleOwner,
+			Color:    "#f97316",
+		},
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateBoard() error = %v", err)
+	}
+
+	if len(created.JoinCode) != 8 {
+		t.Fatalf("CreateBoard() join code length = %d, want 8", len(created.JoinCode))
+	}
+
+	for _, character := range created.JoinCode {
+		if !strings.ContainsRune(joinCodeAlphabet, character) {
+			t.Fatalf("CreateBoard() join code = %q, found non-alphanumeric character %q", created.JoinCode, string(character))
+		}
+	}
+}
+
+func TestStoreRetriesJoinCodeGenerationCollisions(t *testing.T) {
+	t.Parallel()
+
+	randomBytes := append(bytes.Repeat([]byte{0}, 8), append(bytes.Repeat([]byte{0}, 8), bytes.Repeat([]byte{1}, 8)...)...)
+	store, err := New(4, WithRandomSource(bytes.NewReader(randomBytes)))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
+	first, err := store.CreateBoard(CreateBoardParams{
+		BoardID: "board_1",
+		Owner: Participant{
+			ActorID:  "owner_1",
+			DeviceID: "device_owner_1",
+			Nickname: "Owner",
+			Role:     RoleOwner,
+			Color:    "#f97316",
+		},
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateBoard() first error = %v", err)
+	}
+
+	second, err := store.CreateBoard(CreateBoardParams{
+		BoardID: "board_2",
+		Owner: Participant{
+			ActorID:  "owner_2",
+			DeviceID: "device_owner_2",
+			Nickname: "Owner 2",
+			Role:     RoleOwner,
+			Color:    "#8b5cf6",
+		},
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("CreateBoard() second error = %v", err)
+	}
+
+	if first.JoinCode != "AAAAAAAA" {
+		t.Fatalf("CreateBoard() first join code = %q, want %q", first.JoinCode, "AAAAAAAA")
+	}
+
+	if second.JoinCode != "BBBBBBBB" {
+		t.Fatalf("CreateBoard() second join code = %q, want %q", second.JoinCode, "BBBBBBBB")
 	}
 }
