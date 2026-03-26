@@ -43,7 +43,7 @@
 - [x] Build join form with code and nickname inputs.
 - [x] Add app-level connection state store.
 - [ ] Add socket client with reconnect logic.
-- [ ] Add session stores for actor id, board id, join code, role, and participants.
+- [x] Add session stores for actor id, board id, join code, role, and participants.
 - [ ] Add invalid-code, board-full, and reconnecting UI states.
 
 ## Phase 4: Whiteboard Core

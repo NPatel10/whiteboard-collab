@@ -6,6 +6,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import {
 		appConnectionState,
+		appSessionState,
 		publicRuntimeConfig,
 		type ParticipantRole,
 		type ParticipantSummary,
@@ -27,10 +28,18 @@
 
 	const defaultJoinCode = 'A7F3KQ9X';
 	const invalidJoinCodeError = 'Enter a valid 8-character board code.';
-	const boardParticipants: ParticipantSummary[] = [
-		{ actor_id: 'u_owner_1', nickname: 'Nayan', role: 'owner', color: '#f97316' },
-		{ actor_id: 'u_guest_2', nickname: 'Kai', role: 'guest', color: '#0ea5e9' }
-	];
+	const ownerParticipant: ParticipantSummary = {
+		actor_id: 'u_owner_1',
+		nickname: 'Nayan',
+		role: 'owner',
+		color: '#f97316'
+	};
+	const guestBoardParticipant: ParticipantSummary = {
+		actor_id: 'u_guest_2',
+		nickname: 'Kai',
+		role: 'guest',
+		color: '#0ea5e9'
+	};
 	const tools: ToolbarOption[] = [
 		{ id: 'select', label: 'Select', shortcut: 'V' },
 		{ id: 'pen', label: 'Pen', shortcut: 'P' },
@@ -50,24 +59,28 @@
 		{ label: 'Sync status', value: 'Ready' }
 	];
 
-	let currentJoinCode = $state(defaultJoinCode);
 	let guestNickname = $state(publicRuntimeConfig.defaultNickname);
 	let joinCode = $state('');
 	let joinError = $state<string | null>(null);
 	let isJoinFormOpen = $state(false);
 	let activeTool = $state<WhiteboardTool>('pen');
-	let boardRole = $state<ParticipantRole>('owner');
 	let shellState = $state<ShellState>('landing');
 
 	function createBoard() {
-		currentJoinCode = defaultJoinCode;
+		appSessionState.setSession({
+			actorId: ownerParticipant.actor_id,
+			boardId: 'board_1',
+			joinCode: defaultJoinCode,
+			role: 'owner',
+			participants: [ownerParticipant, guestBoardParticipant]
+		});
 		isJoinFormOpen = false;
 		joinError = null;
 		openBoard('owner');
 	}
 
 	function openBoard(role: ParticipantRole) {
-		boardRole = role;
+		appSessionState.setRole(role);
 		shellState = 'board';
 		appConnectionState.setConnected();
 		activeTool = role === 'owner' ? 'pen' : 'select';
@@ -87,6 +100,7 @@
 	function resetToLanding() {
 		shellState = 'landing';
 		appConnectionState.setDisconnected();
+		appSessionState.clearSession();
 	}
 
 	function selectTool(toolId: WhiteboardTool) {
@@ -123,22 +137,34 @@
 			return;
 		}
 
-		currentJoinCode = normalizedJoinCode;
 		guestNickname = trimmedNickname;
 		joinError = null;
 		isJoinFormOpen = false;
+		appSessionState.setSession({
+			actorId: 'u_guest_local',
+			boardId: `board_${normalizedJoinCode.toLowerCase()}`,
+			joinCode: normalizedJoinCode,
+			role: 'guest',
+			participants: [
+				ownerParticipant,
+				{
+					actor_id: 'u_guest_local',
+					nickname: trimmedNickname,
+					role: 'guest',
+					color: '#10b981'
+				},
+				guestBoardParticipant
+			]
+		});
 		openBoard('guest');
 	}
 
 	function getParticipants(): ParticipantSummary[] {
-		const guestParticipant: ParticipantSummary = {
-			actor_id: 'u_guest_local',
-			nickname: guestNickname,
-			role: 'guest',
-			color: '#10b981'
-		};
+		if (appSessionState.participants.length > 0) {
+			return appSessionState.participants;
+		}
 
-		return [boardParticipants[0], guestParticipant, boardParticipants[1]];
+		return [ownerParticipant, guestBoardParticipant];
 	}
 </script>
 
@@ -300,24 +326,28 @@
 				<div class="flex flex-wrap items-center justify-between gap-3 rounded-[1.75rem] border border-white/70 bg-white/75 px-5 py-4 shadow-[0_16px_50px_rgba(15,23,42,0.06)] backdrop-blur">
 					<div class="space-y-1">
 						<div class="flex items-center gap-2">
-							<Badge class={boardRole === 'owner' ? 'bg-amber-500 text-amber-950' : 'bg-sky-500 text-sky-950'}>
-								{boardRole === 'owner' ? 'Owner board' : 'Guest board'}
+						<Badge
+							class={appSessionState.role === 'owner' ? 'bg-amber-500 text-amber-950' : 'bg-sky-500 text-sky-950'}
+						>
+								{appSessionState.role === 'owner' ? 'Owner board' : 'Guest board'}
 							</Badge>
 							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">
 								{appConnectionState.statusLabel}
 							</Badge>
 						</div>
 						<h2 class="text-xl font-semibold tracking-tight text-zinc-950">
-							{boardRole === 'owner' ? 'Authority view for snapshots and controls' : 'Guest view with owner-synced state'}
+							{appSessionState.role === 'owner'
+								? 'Authority view for snapshots and controls'
+								: 'Guest view with owner-synced state'}
 						</h2>
 						<p class="text-sm text-zinc-600">
-							Board <span class="font-medium text-zinc-900">{currentJoinCode}</span> stays in the same route while UI
-							chrome adapts by role and connection state.
+							Board <span class="font-medium text-zinc-900">{appSessionState.joinCode || defaultJoinCode}</span> stays in
+							the same route while UI chrome adapts by role and connection state.
 						</p>
 					</div>
 
 					<div class="flex flex-wrap gap-2">
-						<Button variant="outline" class="bg-white" onclick={() => openBoard(boardRole)}>
+						<Button variant="outline" class="bg-white" onclick={() => openBoard(appSessionState.role ?? 'owner')}>
 							Clear overlay
 						</Button>
 						<Button variant="outline" class="bg-white" onclick={showReconnectOverlay}>
@@ -356,7 +386,7 @@
 								<p class="text-sm font-semibold text-zinc-900">Infinite canvas shell</p>
 							</div>
 							<div class="flex items-center gap-2">
-								{#if boardRole === 'owner'}
+								{#if appSessionState.role === 'owner'}
 									<Button variant="outline" size="sm" class="bg-white">Share</Button>
 									<Button variant="outline" size="sm" class="bg-white">Import</Button>
 								{/if}
@@ -412,7 +442,10 @@
 											apply a fresh snapshot when the owner comes back online.
 										</p>
 										<div class="mt-6 flex gap-2">
-											<Button class="bg-amber-400 text-zinc-950 hover:bg-amber-300" onclick={() => openBoard(boardRole)}>
+											<Button
+												class="bg-amber-400 text-zinc-950 hover:bg-amber-300"
+												onclick={() => openBoard(appSessionState.role ?? 'owner')}
+											>
 												Resume preview
 											</Button>
 											<Button variant="outline" class="border-white/20 bg-transparent text-white hover:bg-white/10" onclick={resetToLanding}>
@@ -432,12 +465,12 @@
 								<h3 class="mt-2 text-lg font-semibold text-zinc-950">Participants and sync context</h3>
 							</div>
 							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">
-								{boardRole === 'owner' ? 'Owner controls' : 'Guest controls'}
+								{appSessionState.role === 'owner' ? 'Owner controls' : 'Guest controls'}
 							</Badge>
 						</div>
 
 						<div class="mt-5 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
-							{#each boardRole === 'owner' ? ownerMetrics : guestMetrics as metric}
+							{#each appSessionState.role === 'owner' ? ownerMetrics : guestMetrics as metric}
 								<div class="rounded-3xl border border-zinc-950/8 bg-zinc-50/80 p-4">
 									<p class="text-xs font-semibold uppercase tracking-[0.22em] text-zinc-500">{metric.label}</p>
 									<p class="mt-2 text-sm font-semibold text-zinc-950">{metric.value}</p>
@@ -463,7 +496,7 @@
 										</div>
 									</div>
 
-									{#if boardRole === 'owner' && participant.role === 'guest'}
+									{#if appSessionState.role === 'owner' && participant.role === 'guest'}
 										<Button variant="outline" size="sm" class="bg-white">Kick</Button>
 									{/if}
 								</div>
