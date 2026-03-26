@@ -13,8 +13,10 @@ var (
 	ErrBoardAlreadyExists       = errors.New("board already exists")
 	ErrBoardFull                = errors.New("board is full")
 	ErrBoardNotFound            = errors.New("board not found")
+	ErrInvalidCodeTTL           = errors.New("code ttl must be greater than zero")
 	ErrInvalidJoinCodeLength    = errors.New("join code length must be greater than zero")
 	ErrInvalidMaxParticipants   = errors.New("max participants must be greater than zero")
+	ErrInvalidNowFunc           = errors.New("now function is required")
 	ErrJoinCodeAlreadyExists    = errors.New("join code already exists")
 	ErrJoinCodeGenerationFailed = errors.New("unable to generate unique join code")
 	ErrJoinCodeNotFound         = errors.New("join code not found")
@@ -64,6 +66,8 @@ type Store struct {
 	mu                 sync.RWMutex
 	maxParticipants    int
 	joinCodeLength     int
+	codeTTL            time.Duration
+	now                func() time.Time
 	randomSource       io.Reader
 	boardIDsByJoinCode map[string]string
 	boardsByID         map[string]*boardRecord
@@ -89,6 +93,8 @@ func New(maxParticipants int, options ...Option) (*Store, error) {
 	store := &Store{
 		maxParticipants:    maxParticipants,
 		joinCodeLength:     defaultJoinCodeLength,
+		codeTTL:            defaultCodeTTL,
+		now:                time.Now,
 		randomSource:       newDefaultRandomSource(),
 		boardIDsByJoinCode: make(map[string]string),
 		boardsByID:         make(map[string]*boardRecord),
@@ -149,8 +155,8 @@ func (store *Store) CreateBoard(params CreateBoardParams, now time.Time) (BoardS
 }
 
 func (store *Store) GetBoardByJoinCode(joinCode string) (BoardSession, bool) {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
+	store.mu.Lock()
+	defer store.mu.Unlock()
 
 	boardID, exists := store.boardIDsByJoinCode[normalizeJoinCode(joinCode)]
 	if !exists {
@@ -159,6 +165,11 @@ func (store *Store) GetBoardByJoinCode(joinCode string) (BoardSession, bool) {
 
 	record := store.boardsByID[boardID]
 	if record == nil {
+		return BoardSession{}, false
+	}
+
+	if store.isExpired(record, store.now().UTC()) {
+		store.deleteBoardLocked(record.BoardID)
 		return BoardSession{}, false
 	}
 
@@ -189,6 +200,11 @@ func (store *Store) JoinBoard(params JoinBoardParams, now time.Time) (BoardSessi
 		return BoardSession{}, ErrBoardNotFound
 	}
 
+	if store.isExpired(record, now.UTC()) {
+		store.deleteBoardLocked(record.BoardID)
+		return BoardSession{}, ErrJoinCodeNotFound
+	}
+
 	if len(record.ParticipantOrder) >= store.maxParticipants {
 		return BoardSession{}, ErrBoardFull
 	}
@@ -213,6 +229,11 @@ func (store *Store) RemoveParticipant(boardID, actorID string, now time.Time) (B
 		return BoardSession{}, ErrBoardNotFound
 	}
 
+	if store.isExpired(record, now.UTC()) {
+		store.deleteBoardLocked(record.BoardID)
+		return BoardSession{}, ErrBoardNotFound
+	}
+
 	if _, exists := record.Participants[strings.TrimSpace(actorID)]; !exists {
 		return BoardSession{}, ErrParticipantNotFound
 	}
@@ -222,6 +243,42 @@ func (store *Store) RemoveParticipant(boardID, actorID string, now time.Time) (B
 	record.LastActivityAt = now.UTC()
 
 	return snapshotBoard(record, store.maxParticipants), nil
+}
+
+func (store *Store) TouchBoard(boardID string, now time.Time) (BoardSession, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	record, exists := store.boardsByID[strings.TrimSpace(boardID)]
+	if !exists {
+		return BoardSession{}, ErrBoardNotFound
+	}
+
+	if store.isExpired(record, now.UTC()) {
+		store.deleteBoardLocked(record.BoardID)
+		return BoardSession{}, ErrBoardNotFound
+	}
+
+	record.LastActivityAt = now.UTC()
+
+	return snapshotBoard(record, store.maxParticipants), nil
+}
+
+func (store *Store) PruneExpired(now time.Time) []string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	expiredBoardIDs := make([]string, 0)
+	for boardID, record := range store.boardsByID {
+		if !store.isExpired(record, now.UTC()) {
+			continue
+		}
+
+		expiredBoardIDs = append(expiredBoardIDs, boardID)
+		store.deleteBoardLocked(boardID)
+	}
+
+	return expiredBoardIDs
 }
 
 func normalizeJoinCode(joinCode string) string {
@@ -315,4 +372,18 @@ func (store *Store) generateUniqueJoinCodeLocked() (string, error) {
 	}
 
 	return "", ErrJoinCodeGenerationFailed
+}
+
+func (store *Store) isExpired(record *boardRecord, now time.Time) bool {
+	return now.Sub(record.LastActivityAt) >= store.codeTTL
+}
+
+func (store *Store) deleteBoardLocked(boardID string) {
+	record, exists := store.boardsByID[boardID]
+	if !exists {
+		return
+	}
+
+	delete(store.boardsByID, boardID)
+	delete(store.boardIDsByJoinCode, record.JoinCode)
 }
