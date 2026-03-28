@@ -275,8 +275,14 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 		return
 	}
 
-	if _, ok := router.store.GetBoardByJoinCode(payload.JoinCode); !ok {
+	session, ok := router.store.GetBoardByJoinCode(payload.JoinCode)
+	if !ok {
 		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonInvalidCode)
+		return
+	}
+
+	if len(session.Participants) >= session.MaxParticipants {
+		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonBoardFull)
 		return
 	}
 
@@ -511,12 +517,12 @@ func (router *Router) handleBoardSnapshot(client *websocketClient, envelope inbo
 		return
 	}
 
-	payload.TargetActorID = strings.TrimSpace(payload.TargetActorID)
-	if payload.TargetActorID == "" {
-		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.snapshot payload requires target_actor_id")
+	if err := validateBoardSnapshotPayload(payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
 		return
 	}
 
+	payload.TargetActorID = strings.TrimSpace(payload.TargetActorID)
 	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
 	if !ownerExists || ownerActorID != session.ActorID {
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "only the board owner can send board.snapshot")
@@ -559,6 +565,11 @@ func (router *Router) handleBoardSnapshotAck(client *websocketClient, envelope i
 	var payload boardSnapshotAckPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.snapshot.ack payload is invalid JSON")
+		return
+	}
+
+	if err := validateBoardSnapshotAckPayload(payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
 		return
 	}
 
@@ -1010,8 +1021,8 @@ func validateBoardActionPayload(payload boardActionPayload) error {
 		return fmt.Errorf("board.action payload requires action_id, client_sequence, and action_kind")
 	}
 
-	if len(payload.Data) == 0 {
-		return fmt.Errorf("board.action payload requires data")
+	if !isJSONObjectPayload(payload.Data) {
+		return fmt.Errorf("board.action payload requires data to be a JSON object")
 	}
 
 	return nil
@@ -1042,6 +1053,10 @@ func validatePresenceUpdatePayload(payload presenceUpdatePayload) error {
 }
 
 func validateEmptyPayload(payload json.RawMessage, messageType string) error {
+	if !isJSONObjectPayload(payload) {
+		return fmt.Errorf("%s payload must be an empty JSON object", messageType)
+	}
+
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &parsed); err != nil {
 		return fmt.Errorf("%s payload must be a JSON object", messageType)
@@ -1049,6 +1064,35 @@ func validateEmptyPayload(payload json.RawMessage, messageType string) error {
 
 	if len(parsed) != 0 {
 		return fmt.Errorf("%s payload must be empty", messageType)
+	}
+
+	return nil
+}
+
+func validateBoardSnapshotPayload(payload boardSnapshotPayload) error {
+	payload.TargetActorID = strings.TrimSpace(payload.TargetActorID)
+	if payload.TargetActorID == "" {
+		return fmt.Errorf("board.snapshot payload requires target_actor_id")
+	}
+
+	if payload.SnapshotVersion <= 0 {
+		return fmt.Errorf("board.snapshot payload requires snapshot_version to be a positive integer")
+	}
+
+	if payload.ActionCursor < 0 {
+		return fmt.Errorf("board.snapshot payload requires action_cursor to be a non-negative integer")
+	}
+
+	if !isJSONObjectPayload(payload.BoardState) {
+		return fmt.Errorf("board.snapshot payload requires board_state to be a JSON object")
+	}
+
+	return nil
+}
+
+func validateBoardSnapshotAckPayload(payload boardSnapshotAckPayload) error {
+	if payload.SnapshotVersion <= 0 {
+		return fmt.Errorf("board.snapshot.ack payload requires snapshot_version to be a positive integer")
 	}
 
 	return nil
@@ -1071,6 +1115,16 @@ func (router *Router) touchBoardActivity(client *websocketClient, envelope inbou
 
 func (router *Router) idleReadTimeout() time.Duration {
 	return router.cfg.HeartbeatInterval * 2
+}
+
+func isJSONObjectPayload(payload json.RawMessage) bool {
+	var parsed any
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return false
+	}
+
+	_, ok := parsed.(map[string]any)
+	return ok
 }
 
 func isSupportedPresenceTool(tool string) bool {

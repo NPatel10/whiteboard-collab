@@ -1442,6 +1442,198 @@ func TestWebSocketPresenceUpdateRejectsMalformedPayload(t *testing.T) {
 	}
 }
 
+func TestWebSocketRejectsMalformedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"session.create","request_id":"req_malformed_envelope"`)); err != nil {
+		t.Fatalf("write malformed websocket message: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, conn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "" {
+		t.Fatalf("error request id = %q, want empty", errorEnvelope.RequestID)
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "invalid_message" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
+func TestWebSocketBoardSnapshotRejectsMalformedPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_snapshot_invalid",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_snapshot_invalid",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "board.snapshot",
+		"request_id": "req_snapshot_invalid",
+		"payload": map[string]any{
+			"target_actor_id":  "actor_guest",
+			"snapshot_version": 1,
+			"board_state":      "not-an-object",
+			"action_cursor":    0,
+		},
+	}); err != nil {
+		t.Fatalf("write malformed board.snapshot: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, ownerConn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "req_snapshot_invalid" {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_snapshot_invalid")
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "invalid_message" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
+func TestWebSocketBoardActionRejectsMalformedDataPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_action_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_action",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "board.action",
+		"request_id": "req_action_invalid",
+		"payload": map[string]any{
+			"action_id":       "action_1",
+			"client_sequence": 1,
+			"action_kind":     "shape.create",
+			"data":            "not-an-object",
+		},
+	}); err != nil {
+		t.Fatalf("write malformed board.action: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, ownerConn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "req_action_invalid" {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_action_invalid")
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "invalid_message" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
+func TestWebSocketHeartbeatPingRejectsNullPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       100 * time.Millisecond,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_heartbeat_null",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_heartbeat_null",
+		},
+	}); err != nil {
+		t.Fatalf("write session.create: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, conn, "session.created", 2*time.Second)
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "heartbeat.ping",
+		"request_id": "req_heartbeat_null",
+		"payload":    nil,
+	}); err != nil {
+		t.Fatalf("write heartbeat.ping with null payload: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, conn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "req_heartbeat_null" {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_heartbeat_null")
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "invalid_message" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
 func TestWebSocketHeartbeatPingKeepsSessionAlive(t *testing.T) {
 	t.Parallel()
 
@@ -1818,6 +2010,94 @@ func TestWebSocketSessionJoinRejectedBoardFull(t *testing.T) {
 
 	if payload.Reason != "board_full" {
 		t.Fatalf("reason = %q, want %q", payload.Reason, "board_full")
+	}
+}
+
+func TestWebSocketSessionJoinPrefersBoardFullOverCodeRateLimit(t *testing.T) {
+	t.Parallel()
+
+	currentNow := time.Date(2026, time.March, 28, 10, 30, 0, 0, time.UTC)
+	router := NewRouter(currentNow, config.Config{
+		MaxParticipantsPerBoard: 2,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))).(*Router)
+	router.rateLimits = newWebsocketRateLimitsWithConfig(func() time.Time {
+		return currentNow
+	}, 10, 10, 1, time.Minute)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_owner_limit_edge",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_limit_edge",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create message: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	firstGuestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer firstGuestConn.Close()
+
+	if err := firstGuestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_limit_edge_1",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest 1",
+			"device_id": "device_guest_limit_edge_1",
+		},
+	}); err != nil {
+		t.Fatalf("write first guest session.join message: %v", err)
+	}
+
+	if _, _, err := firstGuestConn.ReadMessage(); err != nil {
+		t.Fatalf("read first guest session.joined message: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, ownerConn, "board.snapshot.request", 2*time.Second)
+
+	secondGuestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer secondGuestConn.Close()
+
+	if err := secondGuestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_limit_edge_2",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest 2",
+			"device_id": "device_guest_limit_edge_2",
+		},
+	}); err != nil {
+		t.Fatalf("write second guest session.join message: %v", err)
+	}
+
+	rejectEnvelope := readWebSocketMessageByType(t, secondGuestConn, "session.join_rejected", 2*time.Second)
+	if rejectEnvelope.RequestID != "req_join_limit_edge_2" {
+		t.Fatalf("session.join_rejected request id = %q, want %q", rejectEnvelope.RequestID, "req_join_limit_edge_2")
+	}
+
+	var rejectPayload wsSessionJoinRejectedPayload
+	if err := json.Unmarshal(rejectEnvelope.Payload, &rejectPayload); err != nil {
+		t.Fatalf("decode session.join_rejected payload: %v", err)
+	}
+
+	if rejectPayload.Reason != "board_full" {
+		t.Fatalf("session.join_rejected reason = %q, want %q", rejectPayload.Reason, "board_full")
 	}
 }
 
