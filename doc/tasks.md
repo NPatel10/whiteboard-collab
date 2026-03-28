@@ -30,8 +30,8 @@
 - [x] Implement `board.snapshot.request`.
 - [x] Implement `board.snapshot`.
 - [x] Implement `board.snapshot.ack`.
-- [ ] Implement `board.action`.
-- [ ] Implement `presence.update`.
+- [x] Implement `board.action`.
+- [x] Implement `presence.update`.
 - [ ] Implement `participant.kick`.
 - [ ] Implement `board.code.revoke` and `board.code.revoked`.
 - [ ] Implement `heartbeat.ping` and `heartbeat.pong`.

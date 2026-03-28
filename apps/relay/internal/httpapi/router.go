@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -165,6 +166,10 @@ func (router *Router) handleSocketMessage(client *websocketClient, data []byte) 
 		router.handleBoardSnapshot(client, envelope)
 	case "board.snapshot.ack":
 		router.handleBoardSnapshotAck(client, envelope)
+	case "board.action":
+		router.handleBoardAction(client, envelope)
+	case "presence.update":
+		router.handlePresenceUpdate(client, envelope)
 	default:
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "unsupported socket message type")
 	}
@@ -522,6 +527,62 @@ func (router *Router) handleBoardSnapshotAck(client *websocketClient, envelope i
 	}
 }
 
+func (router *Router) handleBoardAction(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	var payload boardActionPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board.action payload is invalid JSON")
+		return
+	}
+
+	if err := validateBoardActionPayload(payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
+		return
+	}
+
+	router.broadcastBoardEvent(session.BoardID, session.ActorID, outboundSocketEnvelope{
+		Type:      "board.action",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   session.ActorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+	})
+}
+
+func (router *Router) handlePresenceUpdate(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	var payload presenceUpdatePayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "presence.update payload is invalid JSON")
+		return
+	}
+
+	if err := validatePresenceUpdatePayload(payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
+		return
+	}
+
+	router.broadcastBoardEvent(session.BoardID, session.ActorID, outboundSocketEnvelope{
+		Type:      "presence.update",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   session.ActorID,
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+	})
+}
+
 func (router *Router) broadcastParticipantJoined(boardID, actorID string, participant participantSummaryPayload) {
 	router.broadcastBoardEvent(boardID, actorID, outboundSocketEnvelope{
 		Type:    "participant.joined",
@@ -657,6 +718,62 @@ func buildParticipantSummaries(participants []roomstore.Participant) []participa
 	}
 
 	return summaries
+}
+
+func validateBoardActionPayload(payload boardActionPayload) error {
+	payload.ActionID = strings.TrimSpace(payload.ActionID)
+	payload.ActionKind = strings.TrimSpace(payload.ActionKind)
+	if payload.ActionID == "" || payload.ActionKind == "" || payload.ClientSequence <= 0 {
+		return fmt.Errorf("board.action payload requires action_id, client_sequence, and action_kind")
+	}
+
+	if len(payload.Data) == 0 {
+		return fmt.Errorf("board.action payload requires data")
+	}
+
+	return nil
+}
+
+func validatePresenceUpdatePayload(payload presenceUpdatePayload) error {
+	payload.Tool = strings.TrimSpace(payload.Tool)
+	payload.State = strings.TrimSpace(payload.State)
+	if payload.Tool == "" || payload.State == "" {
+		return fmt.Errorf("presence.update payload requires tool and state")
+	}
+
+	if !isSupportedPresenceTool(payload.Tool) {
+		return fmt.Errorf("presence.update payload has unsupported tool %q", payload.Tool)
+	}
+
+	if !isSupportedPresenceState(payload.State) {
+		return fmt.Errorf("presence.update payload has unsupported state %q", payload.State)
+	}
+
+	if payload.Cursor != nil {
+		if !payload.Cursor.isValid() {
+			return fmt.Errorf("presence.update payload has invalid cursor")
+		}
+	}
+
+	return nil
+}
+
+func isSupportedPresenceTool(tool string) bool {
+	switch tool {
+	case "select", "pen", "eraser", "shapes", "text", "sticky", "pan":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedPresenceState(state string) bool {
+	switch state {
+	case "active", "idle":
+		return true
+	default:
+		return false
+	}
 }
 
 func (router *Router) writeSocketError(client *websocketClient, requestID, code, message string) {
@@ -887,6 +1004,30 @@ type boardSnapshotPayload struct {
 
 type boardSnapshotAckPayload struct {
 	SnapshotVersion int `json:"snapshot_version"`
+}
+
+type boardActionPayload struct {
+	ActionID       string          `json:"action_id"`
+	ClientSequence int             `json:"client_sequence"`
+	ActionKind     string          `json:"action_kind"`
+	ObjectID       string          `json:"object_id,omitempty"`
+	ObjectVersion  int             `json:"object_version,omitempty"`
+	Data           json.RawMessage `json:"data"`
+}
+
+type presenceCursorPayload struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+func (cursor presenceCursorPayload) isValid() bool {
+	return !math.IsNaN(cursor.X) && !math.IsInf(cursor.X, 0) && !math.IsNaN(cursor.Y) && !math.IsInf(cursor.Y, 0)
+}
+
+type presenceUpdatePayload struct {
+	Cursor *presenceCursorPayload `json:"cursor,omitempty"`
+	Tool   string                 `json:"tool"`
+	State  string                 `json:"state"`
 }
 
 type participantLeftPayload struct {
