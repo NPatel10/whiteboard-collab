@@ -91,13 +91,13 @@
 
 ## Phase 8: Hardening
 
-- [ ] Add validation for malformed WebSocket messages.
+- [x] Add validation for malformed WebSocket messages.
 - [ ] Add snapshot timeout handling if owner does not respond.
 - [ ] Add owner-offline handling for guests.
 - [x] Add code revocation disconnect handling.
-- [ ] Add participant-limit edge case handling.
-- [ ] Add TLS-ready production configuration.
-- [ ] Add Docker production build and runtime checks.
+- [x] Add participant-limit edge case handling.
+- [x] Add TLS-ready production configuration.
+- [x] Add Docker production build and runtime checks.
 
 ## Phase 9: Testing
 
