@@ -16,7 +16,7 @@
 - [x] Implement 8-character alphanumeric code generation.
 - [x] Implement last-activity based 24-hour expiry handling.
 - [x] Implement board capacity limit of 4 participants.
-- [ ] Implement heartbeat handling and idle cleanup.
+- [x] Implement heartbeat handling and idle cleanup.
 - [ ] Implement per-IP and per-code rate limiting.
 - [x] Add structured logging and error responses.
 
@@ -34,7 +34,7 @@
 - [x] Implement `presence.update`.
 - [ ] Implement `participant.kick`.
 - [ ] Implement `board.code.revoke` and `board.code.revoked`.
-- [ ] Implement `heartbeat.ping` and `heartbeat.pong`.
+- [x] Implement `heartbeat.ping` and `heartbeat.pong`.
 
 ## Phase 3: Frontend App Shell
 

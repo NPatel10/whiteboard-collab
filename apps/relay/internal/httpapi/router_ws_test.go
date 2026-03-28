@@ -1055,6 +1055,126 @@ func TestWebSocketPresenceUpdateRejectsMalformedPayload(t *testing.T) {
 	}
 }
 
+func TestWebSocketHeartbeatPingKeepsSessionAlive(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       100 * time.Millisecond,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_heartbeat_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_heartbeat",
+		},
+	}); err != nil {
+		t.Fatalf("write session.create: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, conn, "session.created", 2*time.Second)
+
+	time.Sleep(90 * time.Millisecond)
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "heartbeat.ping",
+		"request_id": "req_heartbeat_ping_1",
+		"payload":    map[string]any{},
+	}); err != nil {
+		t.Fatalf("write first heartbeat.ping: %v", err)
+	}
+
+	firstPong := readWebSocketMessageByType(t, conn, "heartbeat.pong", 2*time.Second)
+	if firstPong.RequestID != "" {
+		t.Fatalf("heartbeat.pong request id = %q, want empty", firstPong.RequestID)
+	}
+
+	var firstPongPayload map[string]any
+	if err := json.Unmarshal(firstPong.Payload, &firstPongPayload); err != nil {
+		t.Fatalf("decode first heartbeat.pong payload: %v", err)
+	}
+	if len(firstPongPayload) != 0 {
+		t.Fatalf("heartbeat.pong payload = %#v, want empty object", firstPongPayload)
+	}
+
+	time.Sleep(130 * time.Millisecond)
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "heartbeat.ping",
+		"request_id": "req_heartbeat_ping_2",
+		"payload":    map[string]any{},
+	}); err != nil {
+		t.Fatalf("write second heartbeat.ping: %v", err)
+	}
+
+	secondPong := readWebSocketMessageByType(t, conn, "heartbeat.pong", 2*time.Second)
+	if secondPong.RequestID != "" {
+		t.Fatalf("heartbeat.pong request id = %q, want empty", secondPong.RequestID)
+	}
+}
+
+func TestWebSocketIdleConnectionDisconnectsWithoutHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	handler := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       100 * time.Millisecond,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	router := handler.(*Router)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_idle_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_idle",
+		},
+	}); err != nil {
+		t.Fatalf("write session.create: %v", err)
+	}
+
+	createdEnvelope := readWebSocketMessageByType(t, conn, "session.created", 2*time.Second)
+	var createdPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(createdEnvelope.Payload, &createdPayload); err != nil {
+		t.Fatalf("decode session.created payload: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("read message after idle timeout, want connection close error")
+	}
+
+	loaded, ok := router.store.GetBoardByJoinCode(createdPayload.JoinCode)
+	if !ok {
+		t.Fatal("GetBoardByJoinCode() returned ok = false, want true while waiting for ttl-based board expiry")
+	}
+
+	if len(loaded.Participants) != 0 {
+		t.Fatalf("GetBoardByJoinCode() participants len = %d, want 0 after idle disconnect cleanup", len(loaded.Participants))
+	}
+}
+
 func TestWebSocketParticipantLeftNotifiesRemainingParticipantsOnDisconnect(t *testing.T) {
 	t.Parallel()
 

@@ -136,6 +136,10 @@ func (router *Router) handleWebSocket(writer http.ResponseWriter, request *http.
 	defer conn.Close()
 
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(router.idleReadTimeout())); err != nil {
+			return
+		}
+
 		messageType, data, err := client.conn.ReadMessage()
 		if err != nil {
 			return
@@ -170,6 +174,8 @@ func (router *Router) handleSocketMessage(client *websocketClient, data []byte) 
 		router.handleBoardAction(client, envelope)
 	case "presence.update":
 		router.handlePresenceUpdate(client, envelope)
+	case "heartbeat.ping":
+		router.handleHeartbeatPing(client, envelope)
 	default:
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "unsupported socket message type")
 	}
@@ -476,9 +482,14 @@ func (router *Router) handleBoardSnapshot(client *websocketClient, envelope inbo
 		Payload:   payload,
 	}
 
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
 	if err := targetClient.WriteJSON(forwarded); err != nil {
 		router.logger.Warn("failed to forward board.snapshot", "board_id", session.BoardID, "target_actor_id", payload.TargetActorID, "error", err)
 		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to forward board.snapshot")
+		return
 	}
 }
 
@@ -521,9 +532,14 @@ func (router *Router) handleBoardSnapshotAck(client *websocketClient, envelope i
 		Payload:   payload,
 	}
 
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
 	if err := ownerClient.WriteJSON(forwarded); err != nil {
 		router.logger.Warn("failed to forward board.snapshot.ack", "board_id", session.BoardID, "owner_actor_id", ownerActorID, "error", err)
 		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to forward board.snapshot.ack")
+		return
 	}
 }
 
@@ -542,6 +558,10 @@ func (router *Router) handleBoardAction(client *websocketClient, envelope inboun
 
 	if err := validateBoardActionPayload(payload); err != nil {
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
+		return
+	}
+
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
 		return
 	}
 
@@ -573,6 +593,10 @@ func (router *Router) handlePresenceUpdate(client *websocketClient, envelope inb
 		return
 	}
 
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
 	router.broadcastBoardEvent(session.BoardID, session.ActorID, outboundSocketEnvelope{
 		Type:      "presence.update",
 		RequestID: envelope.RequestID,
@@ -581,6 +605,30 @@ func (router *Router) handlePresenceUpdate(client *websocketClient, envelope inb
 		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
 		Payload:   payload,
 	})
+}
+
+func (router *Router) handleHeartbeatPing(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	if err := validateEmptyPayload(envelope.Payload, "heartbeat.ping"); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
+		return
+	}
+
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
+	if err := client.WriteJSON(outboundSocketEnvelope{
+		Type:   "heartbeat.pong",
+		Payload: heartbeatPongPayload{},
+	}); err != nil {
+		router.logger.Warn("failed to write heartbeat.pong message", "error", err)
+	}
 }
 
 func (router *Router) broadcastParticipantJoined(boardID, actorID string, participant participantSummaryPayload) {
@@ -756,6 +804,38 @@ func validatePresenceUpdatePayload(payload presenceUpdatePayload) error {
 	}
 
 	return nil
+}
+
+func validateEmptyPayload(payload json.RawMessage, messageType string) error {
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return fmt.Errorf("%s payload must be a JSON object", messageType)
+	}
+
+	if len(parsed) != 0 {
+		return fmt.Errorf("%s payload must be empty", messageType)
+	}
+
+	return nil
+}
+
+func (router *Router) touchBoardActivity(client *websocketClient, envelope inboundSocketEnvelope, boardID string) bool {
+	if _, err := router.store.TouchBoard(boardID, time.Now().UTC()); err != nil {
+		if errors.Is(err, roomstore.ErrBoardNotFound) {
+			router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board is not available")
+			return false
+		}
+
+		router.logger.Warn("failed to refresh board activity", "board_id", boardID, "error", err)
+		router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to refresh board activity")
+		return false
+	}
+
+	return true
+}
+
+func (router *Router) idleReadTimeout() time.Duration {
+	return router.cfg.HeartbeatInterval * 2
 }
 
 func isSupportedPresenceTool(tool string) bool {
@@ -1029,6 +1109,8 @@ type presenceUpdatePayload struct {
 	Tool   string                 `json:"tool"`
 	State  string                 `json:"state"`
 }
+
+type heartbeatPongPayload struct{}
 
 type participantLeftPayload struct {
 	ActorID string `json:"actor_id"`
