@@ -77,7 +77,7 @@
 - [x] Build top bar with share, import, export, and connection status.
 - [x] Build share dialog with code display, copy, revoke, and regenerate actions.
 - [x] Build participant panel with user colors and kick action for owner.
-- [ ] Build remote cursor rendering.
+- [x] Build remote cursor rendering.
 - [x] Build mobile-friendly sheets or drawers for secondary controls.
 - [x] Add visible sync and connection badges.
 
@@ -103,8 +103,8 @@
 
 - [x] Add unit tests for room store, code generation, expiry logic, and rate limiting.
 - [x] Add unit tests for board reducers and action application.
-- [ ] Add integration tests for create, join, snapshot sync, and reconnect flows.
-- [ ] Add integration tests for invalid code, full board, kicked participant, and revoked code cases.
+- [x] Add integration tests for create, join, snapshot sync, and reconnect flows.
+- [x] Add integration tests for invalid code, full board, kicked participant, and revoked code cases.
 - [x] Add frontend smoke tests for landing, owner board, and guest board states.
 
 ## Phase 10: Demo Readiness

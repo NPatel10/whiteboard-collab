@@ -133,6 +133,31 @@ describe('SocketClient', () => {
 		expect(scheduled[1].delayMs).toBe(500);
 	});
 
+	it('flushes queued messages after reconnecting to a replacement socket', () => {
+		const { client, scheduled, sockets, runScheduled } = createHarness();
+
+		client.connect('ws://example.test/socket');
+		sockets[0].open();
+		expect(client.send({ type: 'sync', step: 1 })).toBe(true);
+		expect(sockets[0].sent).toEqual(['{"type":"sync","step":1}']);
+
+		sockets[0].close(1006, 'network error');
+
+		expect(client.status).toBe('reconnecting');
+		expect(scheduled).toHaveLength(1);
+		expect(client.send({ type: 'sync', step: 2 })).toBe(true);
+		expect(client.pendingMessageCount).toBe(1);
+
+		runScheduled(0);
+		expect(sockets).toHaveLength(2);
+
+		sockets[1].open();
+
+		expect(sockets[1].sent).toEqual(['{"type":"sync","step":2}']);
+		expect(client.pendingMessageCount).toBe(0);
+		expect(client.status).toBe('connected');
+	});
+
 	it('stops reconnecting after disconnect', () => {
 		const { client, scheduled, sockets, runScheduled } = createHarness();
 
