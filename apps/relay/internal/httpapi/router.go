@@ -43,18 +43,20 @@ type errorDetails struct {
 }
 
 type Router struct {
-	startedAt              time.Time
-	cfg                    config.Config
-	logger                 *slog.Logger
-	store                  *roomstore.Store
-	websocketUpgrader      websocket.Upgrader
-	idGenerator            func(prefix string) (string, error)
-	rateLimits             *websocketRateLimits
-	connectionMu           sync.RWMutex
-	connectionsByBoard     map[string]map[string]*websocketClient
-	boardOwnerByBoard      map[string]string
-	sessionByConn          map[*websocket.Conn]participantSession
-	disconnectReasonByConn map[*websocket.Conn]string
+	startedAt               time.Time
+	cfg                     config.Config
+	logger                  *slog.Logger
+	store                   *roomstore.Store
+	websocketUpgrader       websocket.Upgrader
+	idGenerator             func(prefix string) (string, error)
+	snapshotRequestTimeout  time.Duration
+	rateLimits              *websocketRateLimits
+	connectionMu            sync.RWMutex
+	connectionsByBoard      map[string]map[string]*websocketClient
+	boardOwnerByBoard       map[string]string
+	pendingSnapshotRequests map[string]map[string]*pendingSnapshotRequest
+	sessionByConn           map[*websocket.Conn]participantSession
+	disconnectReasonByConn  map[*websocket.Conn]string
 }
 
 func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http.Handler {
@@ -82,12 +84,14 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 		websocketUpgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		idGenerator:            generatePrefixedID,
-		rateLimits:             newWebsocketRateLimits(time.Now),
-		connectionsByBoard:     make(map[string]map[string]*websocketClient),
-		boardOwnerByBoard:      make(map[string]string),
-		sessionByConn:          make(map[*websocket.Conn]participantSession),
-		disconnectReasonByConn: make(map[*websocket.Conn]string),
+		idGenerator:             generatePrefixedID,
+		snapshotRequestTimeout:  5 * time.Second,
+		rateLimits:              newWebsocketRateLimits(time.Now),
+		connectionsByBoard:      make(map[string]map[string]*websocketClient),
+		boardOwnerByBoard:       make(map[string]string),
+		pendingSnapshotRequests: make(map[string]map[string]*pendingSnapshotRequest),
+		sessionByConn:           make(map[*websocket.Conn]participantSession),
+		disconnectReasonByConn:  make(map[*websocket.Conn]string),
 	}
 }
 
@@ -286,6 +290,11 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 		return
 	}
 
+	if _, ownerConnected := router.connectionForActor(session.BoardID, session.OwnerActorID); !ownerConnected {
+		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonBoardUnavailable)
+		return
+	}
+
 	if !router.rateLimits.allowSessionJoinByCode(payload.JoinCode) {
 		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonRateLimited)
 		return
@@ -316,6 +325,8 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 	}
 	router.setBoardOwner(session.BoardID, session.OwnerActorID)
 
+	router.registerPendingSnapshotRequest(session.BoardID, actorID, envelope.RequestID, client)
+
 	response := outboundSocketEnvelope{
 		Type:      "session.joined",
 		RequestID: envelope.RequestID,
@@ -340,7 +351,10 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 	}
 
 	router.broadcastParticipantJoined(session.BoardID, actorID, joinedParticipant)
-	router.sendBoardSnapshotRequest(session.BoardID, session.OwnerActorID, actorID, envelope.RequestID)
+
+	if !router.sendBoardSnapshotRequest(session.BoardID, session.OwnerActorID, actorID, envelope.RequestID) {
+		router.failPendingSnapshotRequest(session.BoardID, actorID, "board_unavailable", "board owner is not connected")
+	}
 }
 
 func (router *Router) hasActiveSession(client *websocketClient) bool {
@@ -422,7 +436,12 @@ func (router *Router) handleSocketDisconnect(client *websocketClient) {
 		router.logger.Warn("failed to remove participant on disconnect", "error", err, "board_id", session.BoardID, "actor_id", session.ActorID)
 	}
 
+	router.clearPendingSnapshotRequest(session.BoardID, session.ActorID)
 	router.broadcastParticipantLeft(session.BoardID, session.ActorID, reason)
+
+	if ownerActorID, ownerExists := router.boardOwner(session.BoardID); ownerExists && ownerActorID == session.ActorID {
+		router.failPendingSnapshotRequestsForBoard(session.BoardID, "board_unavailable", "board owner is not connected")
+	}
 }
 
 func (router *Router) unregisterConnection(client *websocketClient) (participantSession, bool) {
@@ -474,10 +493,144 @@ func (router *Router) takeDisconnectReason(conn *websocket.Conn) string {
 	return reason
 }
 
-func (router *Router) sendBoardSnapshotRequest(boardID, ownerActorID, targetActorID, requestID string) {
+func (router *Router) registerPendingSnapshotRequest(boardID, targetActorID, requestID string, client *websocketClient) {
+	pending := &pendingSnapshotRequest{
+		boardID:       boardID,
+		targetActorID: targetActorID,
+		requestID:     requestID,
+		client:        client,
+	}
+
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	pendingRequestsByTarget, exists := router.pendingSnapshotRequests[boardID]
+	if !exists {
+		pendingRequestsByTarget = make(map[string]*pendingSnapshotRequest)
+		router.pendingSnapshotRequests[boardID] = pendingRequestsByTarget
+	}
+
+	if existing, exists := pendingRequestsByTarget[targetActorID]; exists && existing.timer != nil {
+		existing.timer.Stop()
+	}
+
+	pendingRequestsByTarget[targetActorID] = pending
+	pending.timer = time.AfterFunc(router.snapshotRequestTimeout, func() {
+		router.failPendingSnapshotRequest(boardID, targetActorID, "snapshot_timeout", "owner did not respond with a board.snapshot in time")
+	})
+}
+
+func (router *Router) clearPendingSnapshotRequest(boardID, targetActorID string) bool {
+	router.connectionMu.Lock()
+	pendingRequestsByTarget, exists := router.pendingSnapshotRequests[boardID]
+	if !exists {
+		router.connectionMu.Unlock()
+		return false
+	}
+
+	pending, exists := pendingRequestsByTarget[targetActorID]
+	if !exists {
+		router.connectionMu.Unlock()
+		return false
+	}
+
+	delete(pendingRequestsByTarget, targetActorID)
+	if len(pendingRequestsByTarget) == 0 {
+		delete(router.pendingSnapshotRequests, boardID)
+	}
+	router.connectionMu.Unlock()
+
+	if pending.timer != nil {
+		pending.timer.Stop()
+	}
+
+	return true
+}
+
+func (router *Router) completePendingSnapshotRequest(boardID, targetActorID string) bool {
+	return router.clearPendingSnapshotRequest(boardID, targetActorID)
+}
+
+func (router *Router) failPendingSnapshotRequest(boardID, targetActorID, code, message string) {
+	router.connectionMu.Lock()
+	pendingRequestsByTarget, exists := router.pendingSnapshotRequests[boardID]
+	if !exists {
+		router.connectionMu.Unlock()
+		return
+	}
+
+	pending, exists := pendingRequestsByTarget[targetActorID]
+	if !exists {
+		router.connectionMu.Unlock()
+		return
+	}
+
+	delete(pendingRequestsByTarget, targetActorID)
+	if len(pendingRequestsByTarget) == 0 {
+		delete(router.pendingSnapshotRequests, boardID)
+	}
+	router.connectionMu.Unlock()
+
+	if pending.timer != nil {
+		pending.timer.Stop()
+	}
+
+	router.writeSocketError(pending.client, pending.requestID, code, message)
+
+	if err := pending.client.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, message),
+		time.Now().Add(time.Second),
+	); err != nil {
+		router.logger.Warn("failed to close websocket after snapshot failure", "board_id", boardID, "target_actor_id", targetActorID, "error", err)
+	}
+
+	if err := pending.client.conn.Close(); err != nil {
+		router.logger.Warn("failed to close websocket after snapshot failure", "board_id", boardID, "target_actor_id", targetActorID, "error", err)
+	}
+}
+
+func (router *Router) failPendingSnapshotRequestsForBoard(boardID, code, message string) {
+	router.connectionMu.Lock()
+	pendingRequestsByTarget, exists := router.pendingSnapshotRequests[boardID]
+	if !exists {
+		router.connectionMu.Unlock()
+		return
+	}
+
+	pendingRequests := make([]*pendingSnapshotRequest, 0, len(pendingRequestsByTarget))
+	for targetActorID, pending := range pendingRequestsByTarget {
+		delete(pendingRequestsByTarget, targetActorID)
+		pendingRequests = append(pendingRequests, pending)
+	}
+	delete(router.pendingSnapshotRequests, boardID)
+	router.connectionMu.Unlock()
+
+	for _, pending := range pendingRequests {
+		if pending.timer != nil {
+			pending.timer.Stop()
+		}
+
+		router.writeSocketError(pending.client, pending.requestID, code, message)
+
+		if err := pending.client.conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, message),
+			time.Now().Add(time.Second),
+		); err != nil {
+			router.logger.Warn("failed to close websocket after board snapshot failure", "board_id", boardID, "target_actor_id", pending.targetActorID, "error", err)
+		}
+
+		if err := pending.client.conn.Close(); err != nil {
+			router.logger.Warn("failed to close websocket after board snapshot failure", "board_id", boardID, "target_actor_id", pending.targetActorID, "error", err)
+		}
+	}
+}
+
+func (router *Router) sendBoardSnapshotRequest(boardID, ownerActorID, targetActorID, requestID string) bool {
 	ownerClient, exists := router.connectionForActor(boardID, ownerActorID)
 	if !exists {
-		return
+		return false
 	}
 
 	payload := outboundSocketEnvelope{
@@ -501,7 +654,10 @@ func (router *Router) sendBoardSnapshotRequest(boardID, ownerActorID, targetActo
 			"error",
 			err,
 		)
+		return false
 	}
+
+	return true
 }
 
 func (router *Router) handleBoardSnapshot(client *websocketClient, envelope inboundSocketEnvelope) {
@@ -526,6 +682,11 @@ func (router *Router) handleBoardSnapshot(client *websocketClient, envelope inbo
 	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
 	if !ownerExists || ownerActorID != session.ActorID {
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "only the board owner can send board.snapshot")
+		return
+	}
+
+	if !router.completePendingSnapshotRequest(session.BoardID, payload.TargetActorID) {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "snapshot request is no longer pending")
 		return
 	}
 
@@ -1428,6 +1589,14 @@ type websocketClient struct {
 	conn     *websocket.Conn
 	remoteIP string
 	writeMu  sync.Mutex
+}
+
+type pendingSnapshotRequest struct {
+	boardID       string
+	targetActorID string
+	requestID     string
+	client        *websocketClient
+	timer         *time.Timer
 }
 
 func (client *websocketClient) WriteJSON(payload any) error {

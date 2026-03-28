@@ -92,8 +92,8 @@
 ## Phase 8: Hardening
 
 - [x] Add validation for malformed WebSocket messages.
-- [ ] Add snapshot timeout handling if owner does not respond.
-- [ ] Add owner-offline handling for guests.
+- [x] Add snapshot timeout handling if owner does not respond.
+- [x] Add owner-offline handling for guests.
 - [x] Add code revocation disconnect handling.
 - [x] Add participant-limit edge case handling.
 - [x] Add TLS-ready production configuration.

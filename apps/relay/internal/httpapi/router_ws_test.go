@@ -536,6 +536,141 @@ func TestWebSocketSnapshotRequestIsSentToOwnerAfterGuestJoin(t *testing.T) {
 	}
 }
 
+func TestWebSocketSessionJoinRejectedWhenOwnerIsOffline(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_owner_offline",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_offline",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	if err := ownerConn.Close(); err != nil {
+		t.Fatalf("close owner websocket: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_owner_offline",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest",
+			"device_id": "device_guest_offline",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	rejectedEnvelope := readWebSocketMessageByType(t, guestConn, "session.join_rejected", 2*time.Second)
+	if rejectedEnvelope.RequestID != "req_join_owner_offline" {
+		t.Fatalf("session.join_rejected request id = %q, want %q", rejectedEnvelope.RequestID, "req_join_owner_offline")
+	}
+
+	var payload wsSessionJoinRejectedPayload
+	if err := json.Unmarshal(rejectedEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode session.join_rejected payload: %v", err)
+	}
+
+	if payload.Reason != "board_unavailable" {
+		t.Fatalf("join rejected reason = %q, want %q", payload.Reason, "board_unavailable")
+	}
+}
+
+func TestWebSocketSnapshotRequestTimesOutWhenOwnerDoesNotRespond(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))).(*Router)
+	router.snapshotRequestTimeout = 50 * time.Millisecond
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_snapshot_timeout_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_snapshot_timeout",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	joinRequestID := "req_join_snapshot_timeout"
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": joinRequestID,
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Snapshot",
+			"device_id": "device_guest_snapshot_timeout",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	_ = readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+	_ = readWebSocketMessageByType(t, ownerConn, "board.snapshot.request", 2*time.Second)
+
+	errorEnvelope := readWebSocketMessageByType(t, guestConn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != joinRequestID {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, joinRequestID)
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "snapshot_timeout" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "snapshot_timeout")
+	}
+}
+
 func TestWebSocketBoardSnapshotRoutesFromOwnerToTargetGuest(t *testing.T) {
 	t.Parallel()
 
