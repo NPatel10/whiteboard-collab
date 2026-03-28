@@ -38,6 +38,17 @@
 	type OverlayState = 'invalid-code' | 'board-full' | 'reconnecting' | null;
 	type ToolbarOption = { id: WhiteboardTool; label: string; shortcut: string; icon: any };
 	type BoardMetric = { label: string; value: string };
+	type RemoteCursorPlacement = 'above' | 'below';
+	type RemoteCursor = {
+		actorId: string;
+		nickname: string;
+		color: string;
+		left: string;
+		top: string;
+		placement: RemoteCursorPlacement;
+		tool: string;
+		state: string;
+	};
 
 	const defaultJoinCode = 'A7F3KQ9X';
 	const invalidJoinCodeError = 'Enter a valid 8-character board code.';
@@ -51,6 +62,11 @@
 		{ label: 'Rose', value: '#f43f5e' }
 	];
 	const brushPresets = [2, 4, 6, 10, 16];
+	const remoteCursorAnchors: Array<Pick<RemoteCursor, 'left' | 'top' | 'placement'>> = [
+		{ left: '18%', top: '24%', placement: 'above' },
+		{ left: '64%', top: '28%', placement: 'above' },
+		{ left: '46%', top: '66%', placement: 'below' }
+	];
 	const ownerParticipant: ParticipantSummary = { actor_id: 'u_owner_1', nickname: 'Nayan', role: 'owner', color: '#f97316' };
 	const guestBoardParticipant: ParticipantSummary = { actor_id: 'u_guest_2', nickname: 'Kai', role: 'guest', color: '#0ea5e9' };
 	const tools: ToolbarOption[] = [
@@ -287,6 +303,24 @@
 		return appSessionState.participants.length > 0 ? appSessionState.participants : [ownerParticipant, guestBoardParticipant];
 	}
 
+	function getRemoteCursors(): RemoteCursor[] {
+		return getParticipants()
+			.filter((participant) => participant.actor_id !== appSessionState.actorId)
+			.map((participant, index) => {
+				const anchor = remoteCursorAnchors[index % remoteCursorAnchors.length];
+				return {
+					actorId: participant.actor_id,
+					nickname: participant.nickname,
+					color: participant.color,
+					left: anchor.left,
+					top: anchor.top,
+					placement: anchor.placement,
+					tool: participant.role === 'owner' ? 'pen' : index % 2 === 0 ? 'select' : 'text',
+					state: participant.role === 'owner' ? 'drawing on the shared canvas' : 'editing with the live board'
+				};
+			});
+	}
+
 	function getBoardStats(): BoardMetric[] {
 		return [
 			{ label: 'Seats', value: `${getParticipants().length} / 4` },
@@ -504,6 +538,44 @@
 
 						<div class="relative min-h-[34rem] bg-[linear-gradient(90deg,rgba(15,23,42,0.05)_1px,transparent_1px),linear-gradient(rgba(15,23,42,0.05)_1px,transparent_1px)] bg-[size:32px_32px]">
 							<div class="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(251,191,36,0.2),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(14,165,233,0.12),transparent_28%)]"></div>
+							<div class="pointer-events-none absolute inset-0 z-20 overflow-hidden" aria-hidden="true">
+								{#each getRemoteCursors() as cursor}
+									<div class="absolute" style={`left: ${cursor.left}; top: ${cursor.top};`}>
+										<div class="relative">
+											<div
+												class="absolute -left-1.5 -top-1.5 size-4 rounded-full border-2 border-white shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+												style={`background-color: ${cursor.color};`}
+											></div>
+											<div
+												class={`absolute ${
+													cursor.placement === 'above'
+														? 'bottom-full mb-3'
+														: 'top-full mt-3'
+												} left-4 w-48 rounded-2xl border border-white/80 bg-white/95 px-3 py-2 shadow-[0_18px_40px_rgba(15,23,42,0.16)] backdrop-blur`}
+											>
+												<div class="flex items-center justify-between gap-2">
+													<p class="text-xs font-semibold text-zinc-900">{cursor.nickname}</p>
+													<span
+														class="rounded-full px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.22em]"
+														style={`background-color: color-mix(in srgb, ${cursor.color} 14%, white); color: ${cursor.color};`}
+													>
+														{cursor.tool}
+													</span>
+												</div>
+												<p class="mt-1 text-[0.72rem] leading-5 text-zinc-600">{cursor.state}</p>
+											</div>
+											<div
+												class={`absolute ${
+													cursor.placement === 'above'
+														? 'bottom-0 left-0 -translate-x-1/2 translate-y-1'
+														: 'top-0 left-0 -translate-x-1/2 -translate-y-1'
+												} h-8 w-[2px] rounded-full`}
+												style={`background: linear-gradient(to bottom, transparent, ${cursor.color});`}
+											></div>
+										</div>
+									</div>
+								{/each}
+							</div>
 							<div class="relative flex h-full min-h-[34rem] flex-col justify-between gap-6 px-6 py-6">
 								<div class="flex flex-wrap gap-3">
 									<div class="rounded-3xl border border-zinc-950/10 bg-white/85 px-4 py-3 shadow-sm">
