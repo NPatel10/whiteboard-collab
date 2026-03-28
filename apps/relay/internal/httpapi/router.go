@@ -49,6 +49,7 @@ type Router struct {
 	store                  *roomstore.Store
 	websocketUpgrader      websocket.Upgrader
 	idGenerator            func(prefix string) (string, error)
+	rateLimits             *websocketRateLimits
 	connectionMu           sync.RWMutex
 	connectionsByBoard     map[string]map[string]*websocketClient
 	boardOwnerByBoard      map[string]string
@@ -82,6 +83,7 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
 		idGenerator:            generatePrefixedID,
+		rateLimits:             newWebsocketRateLimits(time.Now),
 		connectionsByBoard:     make(map[string]map[string]*websocketClient),
 		boardOwnerByBoard:      make(map[string]string),
 		sessionByConn:          make(map[*websocket.Conn]participantSession),
@@ -133,7 +135,10 @@ func (router *Router) handleWebSocket(writer http.ResponseWriter, request *http.
 	if err != nil {
 		return
 	}
-	client := &websocketClient{conn: conn}
+	client := &websocketClient{
+		conn:     conn,
+		remoteIP: normalizeRateLimitIP(request.RemoteAddr),
+	}
 	defer router.handleSocketDisconnect(client)
 	defer conn.Close()
 
@@ -206,6 +211,11 @@ func (router *Router) handleSessionCreate(client *websocketClient, envelope inbo
 		return
 	}
 
+	if !router.rateLimits.allowSessionCreate(client.remoteIP) {
+		router.writeSocketError(client, envelope.RequestID, "rate_limited", "session.create rate limit exceeded")
+		return
+	}
+
 	session, ownerActorID, err := router.createOwnerSession(payload)
 	if err != nil {
 		router.logger.Error("failed to create board session", "error", err)
@@ -257,6 +267,21 @@ func (router *Router) handleSessionJoin(client *websocketClient, envelope inboun
 	payload.DeviceID = strings.TrimSpace(payload.DeviceID)
 	if payload.JoinCode == "" || payload.Nickname == "" || payload.DeviceID == "" {
 		router.writeSocketError(client, envelope.RequestID, "invalid_message", "session.join payload requires join_code, nickname, and device_id")
+		return
+	}
+
+	if !router.rateLimits.allowSessionJoinByIP(client.remoteIP) {
+		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonRateLimited)
+		return
+	}
+
+	if _, ok := router.store.GetBoardByJoinCode(payload.JoinCode); !ok {
+		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonInvalidCode)
+		return
+	}
+
+	if !router.rateLimits.allowSessionJoinByCode(payload.JoinCode) {
+		router.writeSessionJoinRejected(client, envelope.RequestID, joinRejectedReasonRateLimited)
 		return
 	}
 
@@ -1346,8 +1371,9 @@ type participantSession struct {
 }
 
 type websocketClient struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	conn     *websocket.Conn
+	remoteIP string
+	writeMu  sync.Mutex
 }
 
 func (client *websocketClient) WriteJSON(payload any) error {
@@ -1366,6 +1392,7 @@ const (
 	defaultHeartbeatInterval       = 25 * time.Second
 
 	joinRejectedReasonInvalidCode        = "invalid_code"
+	joinRejectedReasonRateLimited        = "rate_limited"
 	joinRejectedReasonBoardFull          = "board_full"
 	joinRejectedReasonBoardUnavailable   = "board_unavailable"
 	participantLeftReasonDisconnect      = "disconnect"

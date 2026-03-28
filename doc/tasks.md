@@ -17,7 +17,7 @@
 - [x] Implement last-activity based 24-hour expiry handling.
 - [x] Implement board capacity limit of 4 participants.
 - [x] Implement heartbeat handling and idle cleanup.
-- [ ] Implement per-IP and per-code rate limiting.
+- [x] Implement per-IP and per-code rate limiting.
 - [x] Add structured logging and error responses.
 
 ## Phase 2: WebSocket Protocol
@@ -101,7 +101,7 @@
 
 ## Phase 9: Testing
 
-- [ ] Add unit tests for room store, code generation, expiry logic, and rate limiting.
+- [x] Add unit tests for room store, code generation, expiry logic, and rate limiting.
 - [ ] Add unit tests for board reducers and action application.
 - [ ] Add integration tests for create, join, snapshot sync, and reconnect flows.
 - [ ] Add integration tests for invalid code, full board, kicked participant, and revoked code cases.
