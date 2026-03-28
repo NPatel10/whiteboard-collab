@@ -62,9 +62,9 @@
 ## Phase 5: Real-Time Sync
 
 - [ ] Send high-level board actions over WebSocket.
-- [ ] Apply remote actions idempotently.
-- [ ] Ignore duplicate actions by `action_id`.
-- [ ] Guard against stale actions using client sequence or version checks.
+- [x] Apply remote actions idempotently.
+- [x] Ignore duplicate actions by `action_id`.
+- [x] Guard against stale actions using client sequence or version checks.
 - [ ] Implement guest join snapshot flow from creator to target guest.
 - [ ] Block guest editing until snapshot ack completes.
 - [ ] Implement reconnect reconciliation flow.
@@ -102,7 +102,7 @@
 ## Phase 9: Testing
 
 - [x] Add unit tests for room store, code generation, expiry logic, and rate limiting.
-- [ ] Add unit tests for board reducers and action application.
+- [x] Add unit tests for board reducers and action application.
 - [ ] Add integration tests for create, join, snapshot sync, and reconnect flows.
 - [ ] Add integration tests for invalid code, full board, kicked participant, and revoked code cases.
 - [x] Add frontend smoke tests for landing, owner board, and guest board states.

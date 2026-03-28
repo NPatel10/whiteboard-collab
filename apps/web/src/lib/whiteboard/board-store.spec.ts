@@ -51,6 +51,24 @@ function createAction(): BoardActionPayload<'shape.create'> {
 	};
 }
 
+function createRemoteAction<TKind extends BoardActionPayload['action_kind']>(
+	actionKind: TKind,
+	actionId: string,
+	clientSequence: number,
+	data: BoardActionPayload<TKind>['data'],
+	objectId?: string,
+	objectVersion?: number
+): BoardActionPayload<TKind> {
+	return {
+		action_id: actionId,
+		client_sequence: clientSequence,
+		action_kind: actionKind,
+		...(objectId ? { object_id: objectId } : {}),
+		...(objectVersion ? { object_version: objectVersion } : {}),
+		data
+	};
+}
+
 function createStorage(initialValues: Record<string, string> = {}) {
 	const values = new Map(Object.entries(initialValues));
 
@@ -211,6 +229,403 @@ describe('LocalBoardStore', () => {
 
 		const loggedAction = store.actionLog[0].action as BoardActionPayload<'shape.create'>;
 		expect(loggedAction.data.x).toBe(100);
+	});
+
+	it('applies remote actions once and ignores duplicate action ids', () => {
+		const store = new LocalBoardStore();
+		const action = createRemoteAction(
+			'shape.create',
+			'remote_action_1',
+			1,
+			{
+				shape: 'rectangle',
+				x: 100,
+				y: 120,
+				width: 240,
+				height: 140,
+				stroke: '#111827',
+				fill: '#fef3c7',
+				stroke_width: 2
+			},
+			'shape_1',
+			1
+		);
+
+		expect(
+			store.applyRemoteAction(action, {
+				actorId: 'actor_remote_1',
+				receivedAt: '2026-03-26T10:31:00.000Z'
+			})
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(action, {
+				actorId: 'actor_remote_1',
+				receivedAt: '2026-03-26T10:32:00.000Z'
+			})
+		).toBe(false);
+		expect(store.actionCount).toBe(1);
+		expect(store.actionCursor).toBe(1);
+		expect(store.boardState.elements).toEqual([
+			{
+				id: 'shape_1',
+				kind: 'shape',
+				created_by: 'actor_remote_1',
+				created_at: '2026-03-26T10:31:00.000Z',
+				updated_at: '2026-03-26T10:31:00.000Z',
+				shape: 'rectangle',
+				x: 100,
+				y: 120,
+				width: 240,
+				height: 140,
+				rotation: 0,
+				stroke: '#111827',
+				fill: '#fef3c7',
+				stroke_width: 2
+			}
+		]);
+	});
+
+	it('rejects stale remote actions by client sequence and object version', () => {
+		const store = new LocalBoardStore();
+		const createShape = createRemoteAction(
+			'shape.create',
+			'remote_shape_create',
+			1,
+			{
+				shape: 'rectangle',
+				x: 100,
+				y: 120,
+				width: 240,
+				height: 140,
+				stroke: '#111827',
+				fill: '#fef3c7',
+				stroke_width: 2
+			},
+			'shape_1',
+			1
+		);
+		const updateShape = createRemoteAction(
+			'shape.update',
+			'remote_shape_update',
+			2,
+			{
+				object_id: 'shape_1',
+				patch: {
+					x: 180,
+					y: 200,
+					width: 260,
+					height: 150,
+					rotation: 15,
+					stroke: '#1d4ed8',
+					fill: '#dbeafe',
+					stroke_width: 3
+				}
+			},
+			'shape_1',
+			2
+		);
+		const staleSequenceUpdate = createRemoteAction(
+			'shape.update',
+			'remote_shape_update_stale_sequence',
+			1,
+			{
+				object_id: 'shape_1',
+				patch: {
+					x: 220,
+					y: 240
+				}
+			},
+			'shape_1',
+			3
+		);
+		const staleVersionUpdate = createRemoteAction(
+			'shape.update',
+			'remote_shape_update_stale_version',
+			1,
+			{
+				object_id: 'shape_1',
+				patch: {
+					x: 260,
+					y: 280
+				}
+			},
+			'shape_1',
+			2
+		);
+
+		expect(
+			store.applyRemoteAction(createShape, {
+				actorId: 'actor_remote_1',
+				receivedAt: '2026-03-26T10:31:00.000Z'
+			})
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(updateShape, {
+				actorId: 'actor_remote_1',
+				receivedAt: '2026-03-26T10:32:00.000Z'
+			})
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(staleSequenceUpdate, {
+				actorId: 'actor_remote_1',
+				receivedAt: '2026-03-26T10:33:00.000Z'
+			})
+		).toBe(false);
+		expect(
+			store.applyRemoteAction(staleVersionUpdate, {
+				actorId: 'actor_remote_2',
+				receivedAt: '2026-03-26T10:34:00.000Z'
+			})
+		).toBe(false);
+
+		expect(store.actionCount).toBe(2);
+		expect(store.actionCursor).toBe(2);
+		expect(store.boardState.elements[0]).toMatchObject({
+			x: 180,
+			y: 200,
+			width: 260,
+			height: 150,
+			rotation: 15,
+			stroke: '#1d4ed8',
+			fill: '#dbeafe',
+			stroke_width: 3,
+			updated_at: '2026-03-26T10:32:00.000Z'
+		});
+	});
+
+	it('applies representative remote board mutations', () => {
+		const store = new LocalBoardStore();
+
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'shape.create',
+					'remote_shape_create',
+					1,
+					{
+						shape: 'rectangle',
+						x: 100,
+						y: 120,
+						width: 240,
+						height: 140,
+						stroke: '#111827',
+						fill: '#fef3c7',
+						stroke_width: 2
+					},
+					'shape_1',
+					1
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:31:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'text.create',
+					'remote_text_create',
+					2,
+					{
+						x: 300,
+						y: 320,
+						width: 240,
+						height: 96,
+						text: 'Remote note',
+						font_size: 24,
+						color: '#111827',
+						align: 'center'
+					},
+					'text_1',
+					1
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:32:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'sticky.create',
+					'remote_sticky_create',
+					3,
+					{
+						x: 420,
+						y: 440,
+						width: 220,
+						height: 160,
+						text: 'Remote sticky',
+						background: '#fef08a',
+						color: '#111827'
+					},
+					'sticky_1',
+					1
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:33:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'shape.update',
+					'remote_shape_update',
+					4,
+					{
+						object_id: 'shape_1',
+						patch: {
+							x: 180,
+							y: 200,
+							width: 260,
+							height: 150,
+							rotation: 20,
+							stroke: '#1d4ed8',
+							fill: '#dbeafe',
+							stroke_width: 3
+						}
+					},
+					'shape_1',
+					2
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:34:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'text.update',
+					'remote_text_update',
+					5,
+					{
+						object_id: 'text_1',
+						patch: {
+							x: 340,
+							y: 360,
+							text: 'Updated remote note',
+							align: 'right'
+						}
+					},
+					'text_1',
+					2
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:35:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'sticky.update',
+					'remote_sticky_update',
+					6,
+					{
+						object_id: 'sticky_1',
+						patch: {
+							x: 460,
+							y: 480,
+							text: 'Updated remote sticky'
+						}
+					},
+					'sticky_1',
+					2
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:36:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'selection.update',
+					'remote_selection_update',
+					1,
+					{
+						object_ids: ['shape_1', 'sticky_1']
+					}
+				),
+				{
+					actorId: 'actor_remote_2',
+					receivedAt: '2026-03-26T10:37:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'viewport.update',
+					'remote_viewport_update',
+					2,
+					{
+						viewport: {
+							x: 24,
+							y: 36,
+							zoom: 1.25
+						}
+					}
+				),
+				{
+					actorId: 'actor_remote_2',
+					receivedAt: '2026-03-26T10:38:00.000Z'
+				}
+			)
+		).toBe(true);
+		expect(
+			store.applyRemoteAction(
+				createRemoteAction(
+					'eraser.apply',
+					'remote_eraser_apply',
+					7,
+					{
+						object_ids: ['text_1', 'sticky_1']
+					}
+				),
+				{
+					actorId: 'actor_remote_1',
+					receivedAt: '2026-03-26T10:39:00.000Z'
+				}
+			)
+		).toBe(true);
+
+		expect(store.boardState).toEqual({
+			elements: [
+				{
+					id: 'shape_1',
+					kind: 'shape',
+					created_by: 'actor_remote_1',
+					created_at: '2026-03-26T10:31:00.000Z',
+					updated_at: '2026-03-26T10:34:00.000Z',
+					shape: 'rectangle',
+					x: 180,
+					y: 200,
+					width: 260,
+					height: 150,
+					rotation: 20,
+					stroke: '#1d4ed8',
+					fill: '#dbeafe',
+					stroke_width: 3
+				}
+			],
+			viewport: {
+				x: 24,
+				y: 36,
+				zoom: 1.25
+			}
+		});
+		expect(store.selectedObjectIds).toEqual(['shape_1']);
+		expect(store.actionCount).toBe(9);
+		expect(store.actionCursor).toBe(9);
 	});
 
 	it('imports a board state from json into the store', () => {
