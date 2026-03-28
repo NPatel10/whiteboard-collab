@@ -220,6 +220,31 @@ func (store *Store) JoinBoard(params JoinBoardParams, now time.Time) (BoardSessi
 	return snapshotBoard(record, store.maxParticipants), nil
 }
 
+func (store *Store) RevokeJoinCode(boardID string, now time.Time) (BoardSession, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	record, exists := store.boardsByID[strings.TrimSpace(boardID)]
+	if !exists {
+		return BoardSession{}, ErrBoardNotFound
+	}
+
+	if store.isExpired(record, now.UTC()) {
+		store.deleteBoardLocked(record.BoardID)
+		return BoardSession{}, ErrBoardNotFound
+	}
+
+	if record.JoinCode == "" {
+		return BoardSession{}, ErrJoinCodeNotFound
+	}
+
+	delete(store.boardIDsByJoinCode, record.JoinCode)
+	record.JoinCode = ""
+	record.LastActivityAt = now.UTC()
+
+	return snapshotBoard(record, store.maxParticipants), nil
+}
+
 func (store *Store) RemoveParticipant(boardID, actorID string, now time.Time) (BoardSession, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()

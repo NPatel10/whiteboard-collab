@@ -89,6 +89,10 @@ type wsParticipantLeftPayload struct {
 	Reason  string `json:"reason"`
 }
 
+type wsBoardCodeRevokedPayload struct {
+	Reason string `json:"reason"`
+}
+
 type wsErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -1131,6 +1135,169 @@ func TestWebSocketParticipantKickRejectsInvalidPayload(t *testing.T) {
 
 	if payload.Code != "invalid_message" {
 		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
+func TestWebSocketBoardCodeRevokeDisconnectsGuestsAndBlocksRejoin(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_revoke_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_revoke",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_revoke_guest",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Revoke",
+			"device_id": "device_guest_revoke",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+	_ = readWebSocketMessageByType(t, ownerConn, "participant.joined", 2*time.Second)
+
+	const revokeRequestID = "req_board_code_revoke_1"
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "board.code.revoke",
+		"request_id": revokeRequestID,
+		"payload":    map[string]any{},
+	}); err != nil {
+		t.Fatalf("write board.code.revoke: %v", err)
+	}
+
+	ownerRevokedEnvelope := readWebSocketMessageByType(t, ownerConn, "board.code.revoked", 2*time.Second)
+	if ownerRevokedEnvelope.RequestID != revokeRequestID {
+		t.Fatalf("board.code.revoked request id = %q, want %q", ownerRevokedEnvelope.RequestID, revokeRequestID)
+	}
+
+	if ownerRevokedEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("board.code.revoked board id = %q, want %q", ownerRevokedEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if ownerRevokedEnvelope.ActorID != ownerCreatedEnvelope.ActorID {
+		t.Fatalf("board.code.revoked actor id = %q, want %q", ownerRevokedEnvelope.ActorID, ownerCreatedEnvelope.ActorID)
+	}
+
+	var ownerRevokedPayload wsBoardCodeRevokedPayload
+	if err := json.Unmarshal(ownerRevokedEnvelope.Payload, &ownerRevokedPayload); err != nil {
+		t.Fatalf("decode owner board.code.revoked payload: %v", err)
+	}
+
+	if ownerRevokedPayload.Reason != "revoked_by_owner" {
+		t.Fatalf("board.code.revoked reason = %q, want %q", ownerRevokedPayload.Reason, "revoked_by_owner")
+	}
+
+	guestRevokedEnvelope := readWebSocketMessageByType(t, guestConn, "board.code.revoked", 2*time.Second)
+	if guestRevokedEnvelope.RequestID != "" {
+		t.Fatalf("guest board.code.revoked request id = %q, want empty", guestRevokedEnvelope.RequestID)
+	}
+
+	if guestRevokedEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("guest board.code.revoked board id = %q, want %q", guestRevokedEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if guestRevokedEnvelope.ActorID != ownerCreatedEnvelope.ActorID {
+		t.Fatalf("guest board.code.revoked actor id = %q, want %q", guestRevokedEnvelope.ActorID, ownerCreatedEnvelope.ActorID)
+	}
+
+	var guestRevokedPayload wsBoardCodeRevokedPayload
+	if err := json.Unmarshal(guestRevokedEnvelope.Payload, &guestRevokedPayload); err != nil {
+		t.Fatalf("decode guest board.code.revoked payload: %v", err)
+	}
+
+	if guestRevokedPayload.Reason != "revoked_by_owner" {
+		t.Fatalf("guest board.code.revoked reason = %q, want %q", guestRevokedPayload.Reason, "revoked_by_owner")
+	}
+
+	leftEnvelope := readWebSocketMessageByType(t, ownerConn, "participant.left", 2*time.Second)
+	if leftEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("participant.left board id = %q, want %q", leftEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if leftEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("participant.left actor id = %q, want %q", leftEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	var leftPayload wsParticipantLeftPayload
+	if err := json.Unmarshal(leftEnvelope.Payload, &leftPayload); err != nil {
+		t.Fatalf("decode participant.left payload: %v", err)
+	}
+
+	if leftPayload.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("participant.left payload actor id = %q, want %q", leftPayload.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if leftPayload.Reason != "code_revoked" {
+		t.Fatalf("participant.left payload reason = %q, want %q", leftPayload.Reason, "code_revoked")
+	}
+
+	if err := guestConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set guest read deadline: %v", err)
+	}
+
+	if _, _, err := guestConn.ReadMessage(); err == nil {
+		t.Fatal("read from revoked participant, want close error")
+	}
+
+	rejoinConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer rejoinConn.Close()
+
+	if err := rejoinConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_revoke_after",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest After Revoke",
+			"device_id": "device_guest_after_revoke",
+		},
+	}); err != nil {
+		t.Fatalf("write session.join after revoke: %v", err)
+	}
+
+	rejectEnvelope := readWebSocketMessageByType(t, rejoinConn, "session.join_rejected", 2*time.Second)
+	if rejectEnvelope.RequestID != "req_join_revoke_after" {
+		t.Fatalf("session.join_rejected request id = %q, want %q", rejectEnvelope.RequestID, "req_join_revoke_after")
+	}
+
+	var rejectPayload wsSessionJoinRejectedPayload
+	if err := json.Unmarshal(rejectEnvelope.Payload, &rejectPayload); err != nil {
+		t.Fatalf("decode session.join_rejected payload: %v", err)
+	}
+
+	if rejectPayload.Reason != "invalid_code" {
+		t.Fatalf("session.join_rejected reason = %q, want %q", rejectPayload.Reason, "invalid_code")
 	}
 }
 

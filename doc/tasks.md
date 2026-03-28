@@ -33,7 +33,7 @@
 - [x] Implement `board.action`.
 - [x] Implement `presence.update`.
 - [x] Implement `participant.kick`.
-- [ ] Implement `board.code.revoke` and `board.code.revoked`.
+- [x] Implement `board.code.revoke` and `board.code.revoked`.
 - [x] Implement `heartbeat.ping` and `heartbeat.pong`.
 
 ## Phase 3: Frontend App Shell
@@ -94,7 +94,7 @@
 - [ ] Add validation for malformed WebSocket messages.
 - [ ] Add snapshot timeout handling if owner does not respond.
 - [ ] Add owner-offline handling for guests.
-- [ ] Add code revocation disconnect handling.
+- [x] Add code revocation disconnect handling.
 - [ ] Add participant-limit edge case handling.
 - [ ] Add TLS-ready production configuration.
 - [ ] Add Docker production build and runtime checks.

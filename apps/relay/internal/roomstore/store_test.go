@@ -11,12 +11,14 @@ import (
 func TestStoreCreateBoardAndLookupByJoinCode(t *testing.T) {
 	t.Parallel()
 
-	store, err := New(4)
+	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
+	store, err := New(4, WithNowFunc(func() time.Time {
+		return now
+	}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
 	created, err := store.CreateBoard(CreateBoardParams{
 		BoardID:  "board_1",
 		JoinCode: "a7f3kq9x",
@@ -177,6 +179,75 @@ func TestStoreRejectsDuplicateJoinCodesAndRemovesParticipants(t *testing.T) {
 
 	if updated.Participants[0].ActorID != "owner_1" {
 		t.Fatalf("RemoveParticipant() owner actor id = %q, want %q", updated.Participants[0].ActorID, "owner_1")
+	}
+}
+
+func TestStoreRevokesJoinCodeAndBlocksFutureJoins(t *testing.T) {
+	t.Parallel()
+
+	store, err := New(4)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
+	created, err := store.CreateBoard(CreateBoardParams{
+		BoardID:  "board_1",
+		JoinCode: "A7F3KQ9X",
+		Owner: Participant{
+			ActorID:  "owner_1",
+			DeviceID: "device_owner_1",
+			Nickname: "Owner",
+			Role:     RoleOwner,
+			Color:    "#f97316",
+		},
+	}, now)
+	if err != nil {
+		t.Fatalf("CreateBoard() error = %v", err)
+	}
+
+	_, err = store.JoinBoard(JoinBoardParams{
+		JoinCode: created.JoinCode,
+		Participant: Participant{
+			ActorID:  "guest_1",
+			DeviceID: "device_guest_1",
+			Nickname: "Guest 1",
+			Role:     RoleGuest,
+			Color:    "#22c55e",
+		},
+	}, now.Add(15*time.Second))
+	if err != nil {
+		t.Fatalf("JoinBoard() error = %v", err)
+	}
+
+	revoked, err := store.RevokeJoinCode(created.BoardID, now.Add(30*time.Second))
+	if err != nil {
+		t.Fatalf("RevokeJoinCode() error = %v", err)
+	}
+
+	if revoked.JoinCode != "" {
+		t.Fatalf("RevokeJoinCode() join code = %q, want empty", revoked.JoinCode)
+	}
+
+	if len(revoked.Participants) != 2 {
+		t.Fatalf("RevokeJoinCode() participants len = %d, want 2", len(revoked.Participants))
+	}
+
+	if _, ok := store.GetBoardByJoinCode(created.JoinCode); ok {
+		t.Fatal("GetBoardByJoinCode() returned ok = true, want false after revocation")
+	}
+
+	if _, err := store.JoinBoard(JoinBoardParams{
+		JoinCode: created.JoinCode,
+		Participant: Participant{
+			ActorID:  "guest_2",
+			DeviceID: "device_guest_2",
+			Nickname: "Guest 2",
+			Role:     RoleGuest,
+			Color:    "#38bdf8",
+		},
+	}, now.Add(45*time.Second)); !errors.Is(err, ErrJoinCodeNotFound) {
+		t.Fatalf("JoinBoard() error = %v, want %v", err, ErrJoinCodeNotFound)
 	}
 }
 
@@ -355,8 +426,10 @@ func TestStoreTouchBoardRefreshesExpiryWindow(t *testing.T) {
 func TestStorePruneExpiredRemovesOnlyExpiredBoards(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
-	store, err := New(4, WithCodeTTL(time.Hour))
+	currentNow := time.Date(2026, time.March, 26, 10, 30, 0, 0, time.UTC)
+	store, err := New(4, WithCodeTTL(time.Hour), WithNowFunc(func() time.Time {
+		return currentNow
+	}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -370,7 +443,7 @@ func TestStorePruneExpiredRemovesOnlyExpiredBoards(t *testing.T) {
 			Role:     RoleOwner,
 			Color:    "#f97316",
 		},
-	}, now)
+	}, currentNow)
 	if err != nil {
 		t.Fatalf("CreateBoard() expired board error = %v", err)
 	}
@@ -384,12 +457,12 @@ func TestStorePruneExpiredRemovesOnlyExpiredBoards(t *testing.T) {
 			Role:     RoleOwner,
 			Color:    "#8b5cf6",
 		},
-	}, now.Add(30*time.Minute))
+	}, currentNow.Add(30*time.Minute))
 	if err != nil {
 		t.Fatalf("CreateBoard() active board error = %v", err)
 	}
 
-	prunedBoardIDs := store.PruneExpired(now.Add(89 * time.Minute))
+	prunedBoardIDs := store.PruneExpired(currentNow.Add(89 * time.Minute))
 	if len(prunedBoardIDs) != 1 || prunedBoardIDs[0] != expiredBoard.BoardID {
 		t.Fatalf("PruneExpired() board ids = %v, want [%s]", prunedBoardIDs, expiredBoard.BoardID)
 	}
@@ -398,6 +471,7 @@ func TestStorePruneExpiredRemovesOnlyExpiredBoards(t *testing.T) {
 		t.Fatal("GetBoardByJoinCode() returned ok = true, want false for pruned board")
 	}
 
+	currentNow = currentNow.Add(89 * time.Minute)
 	if _, ok := store.GetBoardByJoinCode(activeBoard.JoinCode); !ok {
 		t.Fatal("GetBoardByJoinCode() returned ok = false, want true for active board")
 	}

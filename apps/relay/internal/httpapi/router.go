@@ -178,6 +178,8 @@ func (router *Router) handleSocketMessage(client *websocketClient, data []byte) 
 		router.handlePresenceUpdate(client, envelope)
 	case "participant.kick":
 		router.handleParticipantKick(client, envelope)
+	case "board.code.revoke":
+		router.handleBoardCodeRevoke(client, envelope)
 	case "heartbeat.ping":
 		router.handleHeartbeatPing(client, envelope)
 	default:
@@ -712,6 +714,75 @@ func (router *Router) handleParticipantKick(client *websocketClient, envelope in
 	}
 }
 
+func (router *Router) handleBoardCodeRevoke(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	if err := validateEmptyPayload(envelope.Payload, "board.code.revoke"); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", err.Error())
+		return
+	}
+
+	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
+	if !ownerExists {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board owner is not available")
+		return
+	}
+
+	if session.ActorID != ownerActorID {
+		router.writeSocketError(client, envelope.RequestID, "unauthorized", "only the board owner can revoke the join code")
+		return
+	}
+
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := router.store.RevokeJoinCode(session.BoardID, now); err != nil {
+		switch {
+		case errors.Is(err, roomstore.ErrBoardNotFound):
+			router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board is not available")
+		case errors.Is(err, roomstore.ErrJoinCodeNotFound):
+			router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board join code is not available")
+		default:
+			router.logger.Error("failed to revoke board join code", "error", err, "board_id", session.BoardID)
+			router.writeSocketError(client, envelope.RequestID, "internal_error", "failed to revoke board join code")
+		}
+
+		return
+	}
+
+	revokePayload := boardCodeRevokedPayload{
+		Reason: boardCodeRevokedReasonRevokedByOwner,
+	}
+	response := outboundSocketEnvelope{
+		Type:      "board.code.revoked",
+		RequestID: envelope.RequestID,
+		BoardID:   session.BoardID,
+		ActorID:   session.ActorID,
+		SentAt:    now.Format(time.RFC3339Nano),
+		Payload:   revokePayload,
+	}
+
+	if err := client.WriteJSON(response); err != nil {
+		router.logger.Warn("failed to write board.code.revoked response", "error", err, "board_id", session.BoardID)
+	}
+
+	router.broadcastBoardEvent(session.BoardID, session.ActorID, outboundSocketEnvelope{
+		Type:    "board.code.revoked",
+		BoardID: session.BoardID,
+		ActorID: session.ActorID,
+		SentAt:  now.Format(time.RFC3339Nano),
+		Payload: revokePayload,
+	})
+
+	router.disconnectBoardParticipants(session.BoardID, session.ActorID, participantLeftReasonCodeRevoked)
+}
+
 func (router *Router) handleHeartbeatPing(client *websocketClient, envelope inboundSocketEnvelope) {
 	session, exists := router.sessionForClient(client)
 	if !exists {
@@ -761,6 +832,36 @@ func (router *Router) broadcastParticipantLeft(boardID, actorID, reason string) 
 			Reason:  reason,
 		},
 	})
+}
+
+func (router *Router) disconnectBoardParticipants(boardID, skipActorID, reason string) {
+	for _, client := range router.connectionsForBoard(boardID, skipActorID) {
+		router.setDisconnectReason(client.conn, reason)
+
+		if err := client.conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "board code revoked"),
+			time.Now().Add(time.Second),
+		); err != nil {
+			router.logger.Warn(
+				"failed to send board.code.revoked close message",
+				"board_id",
+				boardID,
+				"error",
+				err,
+			)
+		}
+
+		if err := client.conn.Close(); err != nil {
+			router.logger.Warn(
+				"failed to close revoked participant connection",
+				"board_id",
+				boardID,
+				"error",
+				err,
+			)
+		}
+	}
 }
 
 func (router *Router) broadcastBoardEvent(boardID, skipActorID string, payload outboundSocketEnvelope) {
@@ -1208,6 +1309,10 @@ type participantKickPayload struct {
 	TargetActorID string `json:"target_actor_id"`
 }
 
+type boardCodeRevokedPayload struct {
+	Reason string `json:"reason"`
+}
+
 type presenceCursorPayload struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
@@ -1260,9 +1365,11 @@ const (
 	defaultCodeTTL                 = 24 * time.Hour
 	defaultHeartbeatInterval       = 25 * time.Second
 
-	joinRejectedReasonInvalidCode      = "invalid_code"
-	joinRejectedReasonBoardFull        = "board_full"
-	joinRejectedReasonBoardUnavailable = "board_unavailable"
-	participantLeftReasonDisconnect    = "disconnect"
-	participantLeftReasonKick          = "kick"
+	joinRejectedReasonInvalidCode        = "invalid_code"
+	joinRejectedReasonBoardFull          = "board_full"
+	joinRejectedReasonBoardUnavailable   = "board_unavailable"
+	participantLeftReasonDisconnect      = "disconnect"
+	participantLeftReasonKick            = "kick"
+	participantLeftReasonCodeRevoked     = "code_revoked"
+	boardCodeRevokedReasonRevokedByOwner = "revoked_by_owner"
 )
