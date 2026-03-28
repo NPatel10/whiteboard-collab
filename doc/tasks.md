@@ -57,7 +57,7 @@
 - [x] Implement delete behavior.
 - [x] Implement per-user undo and redo stacks.
 - [x] Implement import from JSON.
-- [ ] Implement export to JSON and PNG.
+- [x] Implement export to JSON and PNG.
 
 ## Phase 5: Real-Time Sync
 
