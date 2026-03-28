@@ -43,16 +43,17 @@ type errorDetails struct {
 }
 
 type Router struct {
-	startedAt          time.Time
-	cfg                config.Config
-	logger             *slog.Logger
-	store              *roomstore.Store
-	websocketUpgrader  websocket.Upgrader
-	idGenerator        func(prefix string) (string, error)
-	connectionMu       sync.RWMutex
-	connectionsByBoard map[string]map[string]*websocketClient
-	boardOwnerByBoard  map[string]string
-	sessionByConn      map[*websocket.Conn]participantSession
+	startedAt              time.Time
+	cfg                    config.Config
+	logger                 *slog.Logger
+	store                  *roomstore.Store
+	websocketUpgrader      websocket.Upgrader
+	idGenerator            func(prefix string) (string, error)
+	connectionMu           sync.RWMutex
+	connectionsByBoard     map[string]map[string]*websocketClient
+	boardOwnerByBoard      map[string]string
+	sessionByConn          map[*websocket.Conn]participantSession
+	disconnectReasonByConn map[*websocket.Conn]string
 }
 
 func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http.Handler {
@@ -80,10 +81,11 @@ func NewRouter(startedAt time.Time, cfg config.Config, logger *slog.Logger) http
 		websocketUpgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		idGenerator:        generatePrefixedID,
-		connectionsByBoard: make(map[string]map[string]*websocketClient),
-		boardOwnerByBoard:  make(map[string]string),
-		sessionByConn:      make(map[*websocket.Conn]participantSession),
+		idGenerator:            generatePrefixedID,
+		connectionsByBoard:     make(map[string]map[string]*websocketClient),
+		boardOwnerByBoard:      make(map[string]string),
+		sessionByConn:          make(map[*websocket.Conn]participantSession),
+		disconnectReasonByConn: make(map[*websocket.Conn]string),
 	}
 }
 
@@ -174,6 +176,8 @@ func (router *Router) handleSocketMessage(client *websocketClient, data []byte) 
 		router.handleBoardAction(client, envelope)
 	case "presence.update":
 		router.handlePresenceUpdate(client, envelope)
+	case "participant.kick":
+		router.handleParticipantKick(client, envelope)
 	case "heartbeat.ping":
 		router.handleHeartbeatPing(client, envelope)
 	default:
@@ -379,12 +383,13 @@ func (router *Router) handleSocketDisconnect(client *websocketClient) {
 		return
 	}
 
+	reason := router.takeDisconnectReason(client.conn)
 	_, err := router.store.RemoveParticipant(session.BoardID, session.ActorID, time.Now().UTC())
 	if err != nil && !errors.Is(err, roomstore.ErrBoardNotFound) && !errors.Is(err, roomstore.ErrParticipantNotFound) {
 		router.logger.Warn("failed to remove participant on disconnect", "error", err, "board_id", session.BoardID, "actor_id", session.ActorID)
 	}
 
-	router.broadcastParticipantLeft(session.BoardID, session.ActorID)
+	router.broadcastParticipantLeft(session.BoardID, session.ActorID, reason)
 }
 
 func (router *Router) unregisterConnection(client *websocketClient) (participantSession, bool) {
@@ -410,6 +415,30 @@ func (router *Router) unregisterConnection(client *websocketClient) (participant
 	}
 
 	return session, true
+}
+
+func (router *Router) setDisconnectReason(conn *websocket.Conn, reason string) {
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	router.disconnectReasonByConn[conn] = reason
+}
+
+func (router *Router) takeDisconnectReason(conn *websocket.Conn) string {
+	router.connectionMu.Lock()
+	defer router.connectionMu.Unlock()
+
+	reason, exists := router.disconnectReasonByConn[conn]
+	if !exists {
+		return participantLeftReasonDisconnect
+	}
+
+	delete(router.disconnectReasonByConn, conn)
+	if reason == "" {
+		return participantLeftReasonDisconnect
+	}
+
+	return reason
 }
 
 func (router *Router) sendBoardSnapshotRequest(boardID, ownerActorID, targetActorID, requestID string) {
@@ -607,6 +636,82 @@ func (router *Router) handlePresenceUpdate(client *websocketClient, envelope inb
 	})
 }
 
+func (router *Router) handleParticipantKick(client *websocketClient, envelope inboundSocketEnvelope) {
+	session, exists := router.sessionForClient(client)
+	if !exists {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "connection is not attached to a session")
+		return
+	}
+
+	var payload participantKickPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "participant.kick payload is invalid JSON")
+		return
+	}
+
+	payload.TargetActorID = strings.TrimSpace(payload.TargetActorID)
+	if payload.TargetActorID == "" {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "participant.kick payload requires target_actor_id")
+		return
+	}
+
+	ownerActorID, ownerExists := router.boardOwner(session.BoardID)
+	if !ownerExists {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "board owner is not available")
+		return
+	}
+
+	if session.ActorID != ownerActorID {
+		router.writeSocketError(client, envelope.RequestID, "unauthorized", "only the board owner can kick participants")
+		return
+	}
+
+	if payload.TargetActorID == ownerActorID {
+		router.writeSocketError(client, envelope.RequestID, "invalid_message", "board owner cannot kick themselves")
+		return
+	}
+
+	targetClient, targetExists := router.connectionForActor(session.BoardID, payload.TargetActorID)
+	if !targetExists {
+		router.writeSocketError(client, envelope.RequestID, "board_unavailable", "kick target is not connected")
+		return
+	}
+
+	if !router.touchBoardActivity(client, envelope, session.BoardID) {
+		return
+	}
+
+	router.setDisconnectReason(targetClient.conn, participantLeftReasonKick)
+
+	if err := targetClient.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "kicked"),
+		time.Now().Add(time.Second),
+	); err != nil {
+		router.logger.Warn(
+			"failed to send participant.kick close message",
+			"board_id",
+			session.BoardID,
+			"target_actor_id",
+			payload.TargetActorID,
+			"error",
+			err,
+		)
+	}
+
+	if err := targetClient.conn.Close(); err != nil {
+		router.logger.Warn(
+			"failed to close kicked participant connection",
+			"board_id",
+			session.BoardID,
+			"target_actor_id",
+			payload.TargetActorID,
+			"error",
+			err,
+		)
+	}
+}
+
 func (router *Router) handleHeartbeatPing(client *websocketClient, envelope inboundSocketEnvelope) {
 	session, exists := router.sessionForClient(client)
 	if !exists {
@@ -624,7 +729,7 @@ func (router *Router) handleHeartbeatPing(client *websocketClient, envelope inbo
 	}
 
 	if err := client.WriteJSON(outboundSocketEnvelope{
-		Type:   "heartbeat.pong",
+		Type:    "heartbeat.pong",
 		Payload: heartbeatPongPayload{},
 	}); err != nil {
 		router.logger.Warn("failed to write heartbeat.pong message", "error", err)
@@ -641,7 +746,11 @@ func (router *Router) broadcastParticipantJoined(boardID, actorID string, partic
 	})
 }
 
-func (router *Router) broadcastParticipantLeft(boardID, actorID string) {
+func (router *Router) broadcastParticipantLeft(boardID, actorID, reason string) {
+	if reason == "" {
+		reason = participantLeftReasonDisconnect
+	}
+
 	router.broadcastBoardEvent(boardID, actorID, outboundSocketEnvelope{
 		Type:    "participant.left",
 		BoardID: boardID,
@@ -649,7 +758,7 @@ func (router *Router) broadcastParticipantLeft(boardID, actorID string) {
 		SentAt:  time.Now().UTC().Format(time.RFC3339Nano),
 		Payload: participantLeftPayload{
 			ActorID: actorID,
-			Reason:  participantLeftReasonDisconnect,
+			Reason:  reason,
 		},
 	})
 }
@@ -1095,6 +1204,10 @@ type boardActionPayload struct {
 	Data           json.RawMessage `json:"data"`
 }
 
+type participantKickPayload struct {
+	TargetActorID string `json:"target_actor_id"`
+}
+
 type presenceCursorPayload struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
@@ -1151,4 +1264,5 @@ const (
 	joinRejectedReasonBoardFull        = "board_full"
 	joinRejectedReasonBoardUnavailable = "board_unavailable"
 	participantLeftReasonDisconnect    = "disconnect"
+	participantLeftReasonKick          = "kick"
 )

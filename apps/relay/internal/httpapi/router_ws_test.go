@@ -69,6 +69,10 @@ type wsBoardActionPayload struct {
 	Data           json.RawMessage `json:"data"`
 }
 
+type wsParticipantKickPayload struct {
+	TargetActorID string `json:"target_actor_id"`
+}
+
 type wsPresenceCursorPayload struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
@@ -902,6 +906,222 @@ func TestWebSocketBoardActionRejectsUnattachedSender(t *testing.T) {
 	errorEnvelope := readWebSocketMessageByType(t, conn, "error", 2*time.Second)
 	if errorEnvelope.RequestID != "req_board_action_rejected" {
 		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_board_action_rejected")
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "invalid_message" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "invalid_message")
+	}
+}
+
+func TestWebSocketParticipantKickRoutesFromOwnerToGuest(t *testing.T) {
+	t.Parallel()
+
+	handler := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	router := handler.(*Router)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_kick_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_kick",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_kick_guest",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Kick",
+			"device_id": "device_guest_kick",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+	_ = readWebSocketMessageByType(t, ownerConn, "participant.joined", 2*time.Second)
+
+	const kickRequestID = "req_participant_kick_1"
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "participant.kick",
+		"request_id": kickRequestID,
+		"payload": map[string]any{
+			"target_actor_id": guestJoinedEnvelope.ActorID,
+		},
+	}); err != nil {
+		t.Fatalf("write participant.kick: %v", err)
+	}
+
+	leftEnvelope := readWebSocketMessageByType(t, ownerConn, "participant.left", 2*time.Second)
+	if leftEnvelope.BoardID != ownerCreatedEnvelope.BoardID {
+		t.Fatalf("participant.left board id = %q, want %q", leftEnvelope.BoardID, ownerCreatedEnvelope.BoardID)
+	}
+
+	if leftEnvelope.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("participant.left actor id = %q, want %q", leftEnvelope.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	var leftPayload wsParticipantLeftPayload
+	if err := json.Unmarshal(leftEnvelope.Payload, &leftPayload); err != nil {
+		t.Fatalf("decode participant.left payload: %v", err)
+	}
+
+	if leftPayload.ActorID != guestJoinedEnvelope.ActorID {
+		t.Fatalf("participant.left payload actor id = %q, want %q", leftPayload.ActorID, guestJoinedEnvelope.ActorID)
+	}
+
+	if leftPayload.Reason != "kick" {
+		t.Fatalf("participant.left payload reason = %q, want %q", leftPayload.Reason, "kick")
+	}
+
+	if err := guestConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set guest read deadline: %v", err)
+	}
+
+	if _, _, err := guestConn.ReadMessage(); err == nil {
+		t.Fatal("read from kicked participant, want close error")
+	}
+
+	loaded, ok := router.store.GetBoardByJoinCode(ownerCreatedPayload.JoinCode)
+	if !ok {
+		t.Fatal("GetBoardByJoinCode() returned ok = false, want true after participant kick")
+	}
+
+	if len(loaded.Participants) != 1 {
+		t.Fatalf("GetBoardByJoinCode() participants len = %d, want 1 after participant kick", len(loaded.Participants))
+	}
+}
+
+func TestWebSocketParticipantKickRejectsUnauthorizedSender(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_kick_unauthorized_owner",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_kick_unauthorized",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer guestConn.Close()
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "session.join",
+		"request_id": "req_join_kick_unauthorized_guest",
+		"payload": map[string]string{
+			"join_code": ownerCreatedPayload.JoinCode,
+			"nickname":  "Guest Unauthorized",
+			"device_id": "device_guest_kick_unauthorized",
+		},
+	}); err != nil {
+		t.Fatalf("write guest session.join: %v", err)
+	}
+
+	guestJoinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+	_ = readWebSocketMessageByType(t, ownerConn, "participant.joined", 2*time.Second)
+
+	if err := guestConn.WriteJSON(map[string]any{
+		"type":       "participant.kick",
+		"request_id": "req_participant_kick_unauthorized",
+		"payload": map[string]any{
+			"target_actor_id": ownerCreatedEnvelope.ActorID,
+		},
+	}); err != nil {
+		t.Fatalf("write unauthorized participant.kick: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, guestConn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "req_participant_kick_unauthorized" {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_participant_kick_unauthorized")
+	}
+
+	var payload wsErrorPayload
+	if err := json.Unmarshal(errorEnvelope.Payload, &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+
+	if payload.Code != "unauthorized" {
+		t.Fatalf("error code = %q, want %q", payload.Code, "unauthorized")
+	}
+
+	if guestJoinedEnvelope.ActorID == ownerCreatedEnvelope.ActorID {
+		t.Fatal("guest actor id unexpectedly matched owner actor id")
+	}
+}
+
+func TestWebSocketParticipantKickRejectsInvalidPayload(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "participant.kick",
+		"request_id": "req_participant_kick_invalid",
+		"payload": map[string]any{
+			"target_actor_id": "   ",
+		},
+	}); err != nil {
+		t.Fatalf("write invalid participant.kick: %v", err)
+	}
+
+	errorEnvelope := readWebSocketMessageByType(t, conn, "error", 2*time.Second)
+	if errorEnvelope.RequestID != "req_participant_kick_invalid" {
+		t.Fatalf("error request id = %q, want %q", errorEnvelope.RequestID, "req_participant_kick_invalid")
 	}
 
 	var payload wsErrorPayload

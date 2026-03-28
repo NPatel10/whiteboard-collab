@@ -32,7 +32,7 @@
 - [x] Implement `board.snapshot.ack`.
 - [x] Implement `board.action`.
 - [x] Implement `presence.update`.
-- [ ] Implement `participant.kick`.
+- [x] Implement `participant.kick`.
 - [ ] Implement `board.code.revoke` and `board.code.revoked`.
 - [x] Implement `heartbeat.ping` and `heartbeat.pong`.
 
