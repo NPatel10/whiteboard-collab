@@ -423,6 +423,7 @@ export type ServerSocketMessage =
 	| SessionJoinRejectedMessage
 	| BoardSnapshotRequestMessage
 	| BoardSnapshotMessage
+	| BoardSnapshotAckMessage
 	| BoardActionMessage
 	| PresenceUpdateMessage
 	| ParticipantJoinedMessage

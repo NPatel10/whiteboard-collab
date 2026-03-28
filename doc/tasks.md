@@ -61,14 +61,14 @@
 
 ## Phase 5: Real-Time Sync
 
-- [ ] Send high-level board actions over WebSocket.
+- [x] Send high-level board actions over WebSocket.
 - [x] Apply remote actions idempotently.
 - [x] Ignore duplicate actions by `action_id`.
 - [x] Guard against stale actions using client sequence or version checks.
-- [ ] Implement guest join snapshot flow from creator to target guest.
-- [ ] Block guest editing until snapshot ack completes.
-- [ ] Implement reconnect reconciliation flow.
-- [ ] Ensure owner reconnect restores board from local storage.
+- [x] Implement guest join snapshot flow from creator to target guest.
+- [x] Block guest editing until snapshot ack completes.
+- [x] Implement reconnect reconciliation flow.
+- [x] Ensure owner reconnect restores board from local storage.
 
 ## Phase 6: Whiteboard UI
 
