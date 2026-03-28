@@ -72,14 +72,14 @@
 
 ## Phase 6: Whiteboard UI
 
-- [ ] Build toolbar with tools for select, pen, eraser, shapes, text, and sticky notes.
-- [ ] Build color and brush controls.
-- [ ] Build top bar with share, import, export, and connection status.
-- [ ] Build share dialog with code display, copy, revoke, and regenerate actions.
-- [ ] Build participant panel with user colors and kick action for owner.
+- [x] Build toolbar with tools for select, pen, eraser, shapes, text, and sticky notes.
+- [x] Build color and brush controls.
+- [x] Build top bar with share, import, export, and connection status.
+- [x] Build share dialog with code display, copy, revoke, and regenerate actions.
+- [x] Build participant panel with user colors and kick action for owner.
 - [ ] Build remote cursor rendering.
-- [ ] Build mobile-friendly sheets or drawers for secondary controls.
-- [ ] Add visible sync and connection badges.
+- [x] Build mobile-friendly sheets or drawers for secondary controls.
+- [x] Add visible sync and connection badges.
 
 ## Phase 7: Persistence
 
