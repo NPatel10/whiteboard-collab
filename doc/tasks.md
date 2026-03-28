@@ -109,13 +109,13 @@
 
 ## Phase 10: Demo Readiness
 
-- [ ] Test one owner plus three guests on the same board.
-- [ ] Test invalid code flow.
-- [ ] Test code revoke and guest disconnect flow.
-- [ ] Test owner refresh and local restore flow.
-- [ ] Test reconnect after temporary network loss.
-- [ ] Test JSON export/import flow.
-- [ ] Test touch interactions on tablet or mobile.
+- [x] Test one owner plus three guests on the same board.
+- [x] Test invalid code flow.
+- [x] Test code revoke and guest disconnect flow.
+- [x] Test owner refresh and local restore flow.
+- [x] Test reconnect after temporary network loss.
+- [x] Test JSON export/import flow.
+- [x] Test touch interactions on tablet or mobile.
 
 ## Recommended First Slice
 

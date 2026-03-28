@@ -5,6 +5,7 @@ import {
 	importBoardSnapshotFromJson,
 	importBoardStateFromJson
 } from './board-json.js';
+import { exportBoardSnapshotToJson } from './board-export.js';
 
 describe('board json import', () => {
 	it('imports a snapshot payload with snake_case properties', () => {
@@ -87,6 +88,67 @@ describe('board json import', () => {
 				x: 0,
 				y: 0,
 				zoom: 1
+			}
+		});
+	});
+
+	it('round-trips exported snapshot json back into a local snapshot', () => {
+		const exportedJson = exportBoardSnapshotToJson(
+			{
+				snapshotVersion: 5,
+				actionCursor: 11,
+				boardState: {
+					elements: [
+						{
+							id: 'sticky_1',
+							kind: 'sticky',
+							created_by: 'actor_1',
+							created_at: '2026-03-26T10:30:00.000Z',
+							updated_at: '2026-03-26T10:31:00.000Z',
+							x: 24,
+							y: 36,
+							width: 180,
+							height: 120,
+							text: 'Round trip',
+							background: '#fde68a',
+							color: '#111827'
+						}
+					],
+					viewport: {
+						x: 10,
+						y: 20,
+						zoom: 1.5
+					}
+				}
+			},
+			{ pretty: false }
+		);
+
+		expect(importBoardSnapshotFromJson(exportedJson)).toEqual({
+			snapshotVersion: 5,
+			actionCursor: 11,
+			boardState: {
+				elements: [
+					{
+						id: 'sticky_1',
+						kind: 'sticky',
+						created_by: 'actor_1',
+						created_at: '2026-03-26T10:30:00.000Z',
+						updated_at: '2026-03-26T10:31:00.000Z',
+						x: 24,
+						y: 36,
+						width: 180,
+						height: 120,
+						text: 'Round trip',
+						background: '#fde68a',
+						color: '#111827'
+					}
+				],
+				viewport: {
+					x: 10,
+					y: 20,
+					zoom: 1.5
+				}
 			}
 		});
 	});

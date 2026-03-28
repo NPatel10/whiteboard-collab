@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"strings"
@@ -336,6 +337,83 @@ func TestWebSocketSessionJoin(t *testing.T) {
 
 	if joinPayload.Participants[1].Role != "guest" {
 		t.Fatalf("second participant role = %q, want %q", joinPayload.Participants[1].Role, "guest")
+	}
+}
+
+func TestWebSocketSupportsOneOwnerPlusThreeGuests(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(time.Unix(0, 0).UTC(), config.Config{
+		MaxParticipantsPerBoard: 4,
+		JoinCodeLength:          8,
+		CodeTTL:                 24 * time.Hour,
+		HeartbeatInterval:       25 * time.Second,
+	}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))).(*Router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	ownerConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+	defer ownerConn.Close()
+
+	if err := ownerConn.WriteJSON(map[string]any{
+		"type":       "session.create",
+		"request_id": "req_create_owner_many_guests",
+		"payload": map[string]string{
+			"nickname":  "Owner",
+			"device_id": "device_owner_many_guests",
+		},
+	}); err != nil {
+		t.Fatalf("write owner session.create message: %v", err)
+	}
+
+	ownerCreatedEnvelope := readWebSocketMessageByType(t, ownerConn, "session.created", 2*time.Second)
+	var ownerCreatedPayload wsSessionCreatedPayload
+	if err := json.Unmarshal(ownerCreatedEnvelope.Payload, &ownerCreatedPayload); err != nil {
+		t.Fatalf("decode owner session.created payload: %v", err)
+	}
+
+	guestConns := make([]*websocket.Conn, 0, 3)
+	for index := 1; index <= 3; index += 1 {
+		guestConn := dialWebSocket(t, server.URL+"/api/v1/ws")
+		guestConns = append(guestConns, guestConn)
+
+		if err := guestConn.WriteJSON(map[string]any{
+			"type":       "session.join",
+			"request_id": fmt.Sprintf("req_join_guest_%d", index),
+			"payload": map[string]string{
+				"join_code": ownerCreatedPayload.JoinCode,
+				"nickname":  fmt.Sprintf("Guest %d", index),
+				"device_id": fmt.Sprintf("device_guest_%d", index),
+			},
+		}); err != nil {
+			t.Fatalf("write guest %d session.join message: %v", index, err)
+		}
+
+		joinedEnvelope := readWebSocketMessageByType(t, guestConn, "session.joined", 2*time.Second)
+		var joinedPayload wsSessionJoinedPayload
+		if err := json.Unmarshal(joinedEnvelope.Payload, &joinedPayload); err != nil {
+			t.Fatalf("decode guest %d session.joined payload: %v", index, err)
+		}
+
+		if joinedPayload.Role != "guest" {
+			t.Fatalf("guest %d role = %q, want %q", index, joinedPayload.Role, "guest")
+		}
+
+		_ = readWebSocketMessageByType(t, ownerConn, "participant.joined", 2*time.Second)
+		_ = readWebSocketMessageByType(t, ownerConn, "board.snapshot.request", 2*time.Second)
+	}
+
+	for _, guestConn := range guestConns {
+		defer guestConn.Close()
+	}
+
+	board, ok := router.store.GetBoardByJoinCode(ownerCreatedPayload.JoinCode)
+	if !ok {
+		t.Fatal("GetBoardByJoinCode() returned ok = false, want true after three guest joins")
+	}
+
+	if len(board.Participants) != 4 {
+		t.Fatalf("participants len = %d, want %d", len(board.Participants), 4)
 	}
 }
 
