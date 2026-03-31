@@ -175,7 +175,7 @@
 		selectedColor = paletteOptions[0].value;
 		brushSize = brushPresets[2];
 		activeTool = 'pen';
-		setBoardActivity('Landing shell ready.');
+		setBoardActivity('Ready.');
 	}
 
 	function selectTool(toolId: WhiteboardTool) {
@@ -211,7 +211,7 @@
 
 	async function copyJoinCode() {
 		if (typeof navigator === 'undefined' || !navigator.clipboard) {
-			setBoardActivity('Clipboard access is unavailable in this demo shell.');
+			setBoardActivity('Clipboard is unavailable.');
 			return;
 		}
 		await navigator.clipboard.writeText(currentJoinCode());
@@ -332,7 +332,7 @@
 
 <svelte:head>
 	<title>Whiteboard Collab</title>
-	<meta name="description" content="Single-route collaborative whiteboard shell with landing, board, reconnecting, and invalid-code states." />
+	<meta name="description" content="Create or join a collaborative whiteboard session." />
 </svelte:head>
 
 <div class="min-h-screen bg-[linear-gradient(180deg,#f6efe6_0%,#f3f1eb_30%,#eef2f3_100%)] text-zinc-950">
@@ -340,7 +340,7 @@
 		<header class="flex items-center justify-between gap-3">
 			<div class="space-y-1">
 				<p class="text-xs font-semibold uppercase tracking-[0.28em] text-amber-700">Whiteboard Collab</p>
-				<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">One route, five app states.</h1>
+				<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Collaborative whiteboard</h1>
 			</div>
 			<div class="flex items-center gap-2">
 				<Badge variant="outline" class="border-zinc-950/10 bg-white/70 text-zinc-700">{publicRuntimeConfig.relayWsUrl}</Badge>
@@ -351,14 +351,10 @@
 		{#if shellState === 'landing'}
 			<section class="grid flex-1 items-center gap-6 py-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(24rem,0.85fr)] lg:py-14">
 				<div class="space-y-6">
-					<Badge class="bg-amber-500 text-amber-950">Create and join from the same route</Badge>
+					<Badge class="bg-amber-500 text-amber-950">Live collaboration</Badge>
 					<h2 class="max-w-2xl text-4xl font-semibold tracking-tight text-zinc-950 sm:text-6xl">
-						Create a board fast, or join one with code plus nickname without leaving `/`.
+						Create a board or join with a code.
 					</h2>
-					<p class="max-w-xl text-lg leading-8 text-zinc-700">
-						The landing state carries the entry flow. Owner creation routes straight into the board shell, while guests
-						open an inline form that validates the join code before transition.
-					</p>
 				</div>
 
 				<Card class="overflow-hidden border-white/70 bg-white/80 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -366,15 +362,15 @@
 						<div class="flex items-center justify-between gap-3">
 							<div>
 								<CardTitle class="text-xl text-zinc-950">Start a session</CardTitle>
-								<CardDescription class="text-zinc-600">Creation and joining stay in one lightweight landing shell.</CardDescription>
+								<CardDescription class="text-zinc-600">Create a board or join an active session.</CardDescription>
 							</div>
-							<Badge class="bg-zinc-950 text-white">Landing flow</Badge>
+							<Badge class="bg-zinc-950 text-white">Ready</Badge>
 						</div>
 					</CardHeader>
 					<CardContent class="space-y-5 pt-6">
 						<Button size="lg" class="bg-zinc-950 text-white hover:bg-zinc-800" onclick={createBoard}>Create board</Button>
 						<Button size="lg" variant="outline" class="bg-white/80" onclick={toggleJoinForm}>{isJoinFormOpen ? 'Hide join form' : 'Join board'}</Button>
-						<Button size="lg" variant="outline" class="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100" onclick={showBoardFullOverlay}>Preview board full</Button>
+						<Button size="lg" variant="outline" class="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100" onclick={showBoardFullOverlay}>Board full</Button>
 
 						{#if isJoinFormOpen}
 							<form class="space-y-4 rounded-[1.75rem] border border-zinc-950/8 bg-zinc-50/80 p-5" onsubmit={submitJoin}>
@@ -386,8 +382,7 @@
 									<span class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Nickname</span>
 									<Input id="nickname" class="bg-white" placeholder="Guest" value={guestNickname} maxlength={24} oninput={handleNicknameInput} />
 								</label>
-								<div class="flex flex-wrap items-center justify-between gap-3">
-									<p class="text-sm text-zinc-600">Guest access stays lightweight: share code plus nickname, then transition into the guest board shell.</p>
+								<div class="flex flex-wrap justify-end gap-3">
 									<Button type="submit" class="bg-amber-500 text-amber-950 hover:bg-amber-400">Join board</Button>
 								</div>
 							</form>
@@ -415,8 +410,8 @@
 								<Badge variant="outline" class={appConnectionState.isReconnecting ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}>{appConnectionState.isReconnecting ? 'Sync paused' : 'Live sync'}</Badge>
 								<Badge variant="outline" class={isJoinCodeRevoked ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-zinc-950/10 bg-white text-zinc-700'}>{isJoinCodeRevoked ? 'Code revoked' : 'Code active'}</Badge>
 							</div>
-							<h2 class="text-xl font-semibold tracking-tight text-zinc-950">{appSessionState.role === 'owner' ? 'Authority view for snapshots, sharing, and board controls' : 'Guest view with owner-synced state and live presence'}</h2>
-							<p class="text-sm text-zinc-600">Board <span class="font-medium text-zinc-900">{currentJoinCode()}</span> stays on the same route while the chrome adapts by role, sync state, and join-code lifecycle.</p>
+							<h2 class="text-xl font-semibold tracking-tight text-zinc-950">{appSessionState.role === 'owner' ? 'Shared board' : 'Joined board'}</h2>
+							<p class="text-sm text-zinc-600">Code <span class="font-medium text-zinc-900">{currentJoinCode()}</span></p>
 							<p class="text-sm text-zinc-600">{boardActivityMessage}</p>
 						</div>
 
@@ -441,9 +436,9 @@
 						<div class="flex items-start justify-between gap-3">
 							<div>
 								<p class="text-xs font-semibold uppercase tracking-[0.24em] text-amber-700">Toolbar</p>
-								<h3 class="mt-1 text-lg font-semibold text-zinc-950">Select, draw, erase, and add content</h3>
+								<h3 class="mt-1 text-lg font-semibold text-zinc-950">Tools</h3>
 							</div>
-							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">Desktop dock</Badge>
+							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">Desktop</Badge>
 						</div>
 
 						<div class="mt-4 space-y-3">
@@ -466,7 +461,7 @@
 							<div class="rounded-[1.5rem] border border-zinc-950/8 bg-zinc-50/80 p-3">
 								<div class="flex items-center gap-2">
 									<PaletteIcon class="size-4 text-amber-600" />
-									<p class="text-sm font-semibold text-zinc-900">Color controls</p>
+									<p class="text-sm font-semibold text-zinc-900">Color</p>
 								</div>
 								<div class="mt-3 flex flex-wrap gap-2">
 									{#each paletteOptions as option}
@@ -492,7 +487,7 @@
 							<div class="rounded-[1.5rem] border border-zinc-950/8 bg-white p-3">
 								<div class="flex items-center gap-2">
 									<BrushIcon class="size-4 text-amber-600" />
-									<p class="text-sm font-semibold text-zinc-900">Brush controls</p>
+									<p class="text-sm font-semibold text-zinc-900">Brush</p>
 								</div>
 								<div class="mt-3 grid grid-cols-3 gap-2">
 									{#each brushPresets as size}
@@ -520,7 +515,7 @@
 							<div class="space-y-2">
 								<div class="flex items-center gap-2">
 									<div class="size-3 rounded-full bg-emerald-500"></div>
-									<p class="text-sm font-semibold text-zinc-900">Infinite canvas shell</p>
+									<p class="text-sm font-semibold text-zinc-900">Canvas</p>
 								</div>
 								<div class="flex flex-wrap items-center gap-2">
 									<Badge variant="outline" class={appConnectionState.isReconnecting ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}>{appConnectionState.isReconnecting ? 'Sync paused' : 'Sync live'}</Badge>
@@ -596,15 +591,15 @@
 									<div class="rounded-[1.75rem] border border-zinc-950/10 bg-white/85 p-5 shadow-sm">
 										<div class="flex items-center justify-between gap-3">
 											<div>
-												<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Canvas notes</p>
-												<p class="mt-2 text-lg font-semibold text-zinc-950">Controls stay separate from the drawing surface, but the state is visible everywhere.</p>
+												<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Session</p>
+												<p class="mt-2 text-lg font-semibold text-zinc-950">Current board details.</p>
 											</div>
 											<Badge variant="outline" class="border-emerald-200 bg-emerald-50 text-emerald-700">Synced</Badge>
 										</div>
 										<div class="mt-4 grid gap-3 sm:grid-cols-2">
 											<div class="rounded-[1.25rem] border border-zinc-950/8 bg-zinc-50/90 p-4">
-												<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Pen surface</p>
-												<p class="mt-2 text-sm leading-6 text-zinc-600">Use the toolbar to switch from select to pen, eraser, shapes, text, or sticky notes.</p>
+												<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Role</p>
+												<p class="mt-2 text-sm leading-6 text-zinc-600 capitalize">{appSessionState.role}</p>
 											</div>
 											<div class="rounded-[1.25rem] border border-zinc-950/8 bg-zinc-50/90 p-4">
 												<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Session code</p>
@@ -616,7 +611,7 @@
 									<div class="space-y-3 rounded-[1.75rem] border border-zinc-950/10 bg-white/85 p-5 shadow-sm">
 										<div class="flex items-center gap-2">
 											<CheckIcon class="size-4 text-emerald-600" />
-											<p class="text-sm font-semibold text-zinc-900">Status badges</p>
+											<p class="text-sm font-semibold text-zinc-900">Status</p>
 										</div>
 										<div class="flex flex-wrap gap-2">
 											<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">{boardActivityMessage}</Badge>
@@ -641,7 +636,7 @@
 						<div class="flex items-start justify-between gap-3">
 							<div>
 								<p class="text-xs font-semibold uppercase tracking-[0.24em] text-amber-700">Participants</p>
-								<h3 class="mt-1 text-lg font-semibold text-zinc-950">User colors and owner actions</h3>
+								<h3 class="mt-1 text-lg font-semibold text-zinc-950">Session members</h3>
 							</div>
 							<Badge variant="outline" class="border-zinc-950/10 bg-white text-zinc-700">{getParticipants().length} / 4</Badge>
 						</div>
@@ -671,10 +666,6 @@
 							{/each}
 						</div>
 
-						<div class="mt-4 rounded-[1.5rem] border border-zinc-950/8 bg-zinc-50/80 p-4">
-							<p class="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">Owner note</p>
-							<p class="mt-2 text-sm leading-6 text-zinc-600">Kick is only available to the owner. Participant color chips and role badges stay visible so the collaboration state reads clearly at a glance.</p>
-						</div>
 					</aside>
 				</div>
 			</section>
@@ -683,7 +674,7 @@
 				<DialogContent class="sm:max-w-3xl">
 					<DialogHeader>
 						<div class="flex items-center gap-2"><Share2Icon class="size-4 text-amber-600" /><DialogTitle>Share board</DialogTitle></div>
-						<DialogDescription>Copy the join code, revoke access, or regenerate a fresh code for the current board.</DialogDescription>
+						<DialogDescription>Current session access.</DialogDescription>
 					</DialogHeader>
 					<div class="grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(16rem,0.8fr)]">
 						<div class="rounded-[1.5rem] border border-zinc-950/8 bg-zinc-50/80 p-5">
@@ -709,8 +700,7 @@
 							</div>
 						</div>
 					</div>
-					<DialogFooter class="sm:justify-between">
-						<p class="text-sm text-zinc-600">Owners can revoke or regenerate the code. Guests can still copy the current code when it remains active.</p>
+					<DialogFooter>
 						<Button variant="outline" class="bg-white" onclick={() => (shareDialogOpen = false)}>Close</Button>
 					</DialogFooter>
 				</DialogContent>
@@ -720,7 +710,7 @@
 				<DrawerContent class="max-h-[88vh]">
 					<DrawerHeader class="px-4 pt-4">
 						<div class="flex items-center gap-2"><MonitorSmartphoneIcon class="size-4 text-amber-600" /><DrawerTitle>Board controls</DrawerTitle></div>
-						<DrawerDescription>Tools, palette, brush presets, and canvas actions for compact screens.</DrawerDescription>
+						<DrawerDescription>Tools and canvas actions.</DrawerDescription>
 					</DrawerHeader>
 					<div class="space-y-5 px-4 pb-6">
 						<div class="grid grid-cols-2 gap-2">
@@ -740,7 +730,7 @@
 						<div class="rounded-[1.5rem] border border-zinc-950/8 bg-zinc-50/80 p-4">
 							<div class="flex items-center gap-2">
 								<PaletteIcon class="size-4 text-amber-600" />
-								<p class="text-sm font-semibold text-zinc-900">Color controls</p>
+								<p class="text-sm font-semibold text-zinc-900">Color</p>
 							</div>
 							<div class="mt-3 flex flex-wrap gap-2">
 								{#each paletteOptions as option}
@@ -761,7 +751,7 @@
 						<div class="rounded-[1.5rem] border border-zinc-950/8 bg-white p-4">
 							<div class="flex items-center gap-2">
 								<BrushIcon class="size-4 text-amber-600" />
-								<p class="text-sm font-semibold text-zinc-900">Brush presets</p>
+								<p class="text-sm font-semibold text-zinc-900">Brush</p>
 							</div>
 							<div class="mt-3 grid grid-cols-3 gap-2">
 								{#each brushPresets as size}
@@ -783,8 +773,8 @@
 			<Sheet bind:open={mobilePeopleOpen}>
 				<SheetContent side="right" class="w-full sm:max-w-md">
 					<SheetHeader class="px-1 pt-4">
-						<div class="flex items-center gap-2"><UsersIcon class="size-4 text-amber-600" /><SheetTitle>Participants and sync</SheetTitle></div>
-						<SheetDescription>The owner can manage participants here while the board stays mounted in the background.</SheetDescription>
+						<div class="flex items-center gap-2"><UsersIcon class="size-4 text-amber-600" /><SheetTitle>Participants</SheetTitle></div>
+						<SheetDescription>Active people in this session.</SheetDescription>
 					</SheetHeader>
 					<div class="px-1 pb-6">
 						<div class="mt-4 space-y-3">

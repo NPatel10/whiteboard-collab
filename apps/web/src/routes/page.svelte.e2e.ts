@@ -3,7 +3,7 @@ import { devices, expect, test } from '@playwright/test';
 test('shows the landing state', async ({ page }) => {
 	await page.goto('/');
 
-	await expect(page.getByRole('heading', { name: 'One route, five app states.' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Collaborative whiteboard' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Create board' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Join board' })).toBeVisible();
 });
@@ -15,7 +15,7 @@ test('shows the owner board state after creating a board', async ({ page }) => {
 
 	await expect(
 		page.getByRole('heading', {
-			name: 'Authority view for snapshots, sharing, and board controls'
+			name: 'Shared board'
 		})
 	).toBeVisible();
 	await expect(page.getByText('Owner board', { exact: true })).toBeVisible();
@@ -33,7 +33,7 @@ test('shows the guest board state after joining a board', async ({ page }) => {
 
 	await expect(
 		page.getByRole('heading', {
-			name: 'Guest view with owner-synced state and live presence'
+			name: 'Joined board'
 		})
 	).toBeVisible();
 	await expect(page.getByText('Guest board', { exact: true })).toBeVisible();
@@ -62,5 +62,5 @@ test('supports touch-first board controls on tablet layout', async ({ page }) =>
 	await expect(page.getByRole('heading', { name: 'Board controls', exact: true })).toBeVisible();
 	await page.keyboard.press('Escape');
 	await page.getByRole('button', { name: 'Participants' }).tap();
-	await expect(page.getByRole('heading', { name: 'Participants and sync', exact: true })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Participants', exact: true })).toBeVisible();
 });

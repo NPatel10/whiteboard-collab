@@ -1,1 +1,1 @@
-<h1>Playwright e2e test demo</h1>
+<h1>Whiteboard Collab</h1>
